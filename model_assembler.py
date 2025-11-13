@@ -70,7 +70,8 @@ class VGGAE(HyperModel):
         datasetting = import_module(f'datasets.setting.{data_mode}')
         cfg_data = datasetting.cfg_data
 
-        state = torch.load(weight_path)
+        state = torch.load(weight_path, map_location=torch.device('cpu'))
+
         new_state = {}
         for k, v in state.items():
             name = k[7:] if k.startswith('module.') else k
