@@ -46,6 +46,7 @@ def save_npy(data, model_folder, scene, output_type, frame, error_type):
 def main():
     dataset_path = 'MovingDroneCrowd'
     scene_path = './test.txt'
+    device = 'cuda'
     scene_names = []
 
     with open(scene_path, 'r') as f:
@@ -65,6 +66,7 @@ def main():
     model = Video_Counter(cfg, cfg_data)
     model.load_state_dict(new_state, strict=True)
     model.eval()
+    model = model.to(device)
     # load data
     data_mode = cfg.DATASET
     datasetting = import_module(f'datasets.setting.{data_mode}')
@@ -112,7 +114,7 @@ def main():
     # inference
     for i, data in enumerate(tqdm(test_loader)):
         images, targets = data
-        pre_global_den, gt_global_den, pre_share_den, gt_share_den, pre_in_out_den, gt_in_out_den, all_loss = model(images,
+        pre_global_den, gt_global_den, pre_share_den, gt_share_den, pre_in_out_den, gt_in_out_den, all_loss = model(images.to(device),
                                                                                                                         targets)
 
         global_den_mae, global_den_mse = calculate_error(pre_global_den, gt_global_den)
@@ -123,12 +125,12 @@ def main():
             scene = target['scene_name']
             frame = target['frame']
 
-            save_npy(global_den_mae[j], 'SDNet_error_map', scene, 'global', frame, 'mae')
-            save_npy(global_den_mse[j], 'SDNet_error_map', scene, 'global', frame, 'mse')
-            save_npy(share_den_mae[j], 'SDNet_error_map', scene, 'global', frame, 'mae')
-            save_npy(share_den_mse[j], 'SDNet_error_map', scene, 'global', frame, 'mse')
-            save_npy(io_den_mae[j], 'SDNet_error_map', scene, 'global', frame, 'mae')
-            save_npy(io_den_mse[j], 'SDNet_error_map', scene, 'global', frame, 'mse')
+            save_npy(global_den_mae[j].detach().cpu().numpy(), 'SDNet_error_map', scene, 'global', frame, 'mae')
+            save_npy(global_den_mse[j].detach().cpu().numpy(), 'SDNet_error_map', scene, 'global', frame, 'mse')
+            save_npy(share_den_mae[j].detach().cpu().numpy(), 'SDNet_error_map', scene, 'global', frame, 'mae')
+            save_npy(share_den_mse[j].detach().cpu().numpy(), 'SDNet_error_map', scene, 'global', frame, 'mse')
+            save_npy(io_den_mae[j].detach().cpu().numpy(), 'SDNet_error_map', scene, 'global', frame, 'mae')
+            save_npy(io_den_mse[j].detach().cpu().numpy(), 'SDNet_error_map', scene, 'global', frame, 'mse')
 
 
     # ae_path = 'weight/VIC/VGGAE/epoch=03-val_loss=0.7279.ckpt'
