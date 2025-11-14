@@ -311,15 +311,15 @@ class SFSDNet(HyperModel):
         pre_global_den, gt_global_den, pre_share_den, gt_share_den, pre_in_out_den, gt_in_out_den, all_loss = self.forward(img, target)
         # loss_mask = self.create_patch_mask()
 
-        batch_idx = torch.arange(0, data.shape[0])
-        batch_idx = batch_idx.view(-1, 2)[:, [1, 0]].view_as(batch_idx)
+        # batch_idx = torch.arange(0, data.shape[0])
+        # batch_idx = batch_idx.view(-1, 2)[:, [1, 0]].view_as(batch_idx)
         loss = 0
         for key in all_loss:
             loss += all_loss[key]
         # L_c = F.mse_loss(output, data[batch_idx])
         # self.log(type + '_recon_loss', L_c, on_epoch=True, prog_bar=True, sync_dist=True)
 
-        return loss
+        return loss.mean()
 
 
 class ConvBlock(nn.Module):

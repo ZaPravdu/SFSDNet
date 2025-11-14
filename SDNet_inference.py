@@ -72,8 +72,6 @@ def main():
     datasetting = import_module(f'datasets.setting.{data_mode}')
     cfg_data = datasetting.cfg_data
 
-    val_frame_intervals = cfg_data.VAL_FRAME_INTERVALS
-    distributed = False
     main_transform = datasets.train_resize_transform(cfg_data.TRAIN_SIZE[0], cfg_data.TRAIN_SIZE[1], flip=False)
     img_transform = standard_transforms.Compose([
         standard_transforms.ToTensor(),
@@ -115,9 +113,8 @@ def main():
     with torch.no_grad():
         for i, data in enumerate(tqdm(test_loader)):
             images, targets = data
-            pre_global_den, gt_global_den, pre_share_den, gt_share_den, pre_in_out_den, gt_in_out_den, all_loss = model(images.to(device),
-                                                                                                                            targets)
-            del images
+            pre_global_den, gt_global_den, pre_share_den, gt_share_den, pre_in_out_den, gt_in_out_den, all_loss = model(images.to(device),targets)
+
             global_den_mae, global_den_mse = calculate_error(pre_global_den.detach().cpu().numpy(), gt_global_den.detach().cpu().numpy())
             share_den_mae, share_den_mse = calculate_error(pre_share_den.detach().cpu().numpy(), gt_share_den.detach().cpu().numpy())
             io_den_mae, io_den_mse = calculate_error(pre_in_out_den.detach().cpu().numpy(), gt_in_out_den.detach().cpu().numpy())
