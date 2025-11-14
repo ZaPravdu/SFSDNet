@@ -385,7 +385,7 @@ class TestDataset(data.Dataset):
                     img1 = self.img_transforms(img1)
                     img2 = self.img_transforms(img2)
 
-                return  [img1, img2], [target1, target2]
+                return [img1, img2], [target1, target2]
 
             if self.img_transforms is not None:
                 img1 = self.img_transforms(img1)

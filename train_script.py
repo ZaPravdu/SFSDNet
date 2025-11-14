@@ -7,10 +7,8 @@ import datasets
 from misc.tools import is_main_process
 
 import os
-
 import torch
 from torch.utils.data import DataLoader, Subset
-
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
@@ -20,6 +18,8 @@ import model_assembler
 import glob
 
 torch.set_float32_matmul_precision('medium')
+
+
 def get_callbacks(monitor, monitor_mode, project_name, experiment_name, patience=3):
     checkpoint_callback = ModelCheckpoint(
         monitor=monitor,
@@ -41,7 +41,6 @@ def get_callbacks(monitor, monitor_mode, project_name, experiment_name, patience
         checkpoint_callback_latest
     ]
     return callbacks
-
 
 
 def main():

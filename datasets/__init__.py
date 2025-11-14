@@ -259,7 +259,8 @@ def createValTestData(datasetname, Dataset, cfg_data, frame_interval, skip_flag,
             standard_transforms.ToTensor(),
             standard_transforms.Normalize(*cfg_data.MEAN_STD)
         ])
-        main_transform = test_transform(cfg_data)
+        # main_transform = test_transform(cfg_data)
+        main_transform = train_resize_transform(cfg_data.TRAIN_SIZE[0], cfg_data.TRAIN_SIZE[1], flip=False)
         # main_transform = torchvision.transforms.Resize((768, 1024))
         with open(os.path.join(cfg_data.DATA_PATH, eval('cfg_data.{}_LST'.format(mode.upper()))), 'r') as txt:
             scene_names = txt.readlines()
