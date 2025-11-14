@@ -57,7 +57,7 @@ class HyperModel(LightningModule):
 
 class VGGAE(HyperModel):
     def __init__(self, lr=0.0001, weight_decay=1e-6,
-                 weight_path='./ep_120_iter_105000_mae_10.119_mse_13.722_seq_MAE_29.751_WRAE_25.237_MIAE_3.157_MOAE_2.663.pth',
+                 weight_path='./sdnet.pth',
                  freeze_backbone=True, max_epochs=10):
         super().__init__()
         # self.orthogonal_loss = orthogonal_loss
@@ -70,8 +70,7 @@ class VGGAE(HyperModel):
         datasetting = import_module(f'datasets.setting.{data_mode}')
         cfg_data = datasetting.cfg_data
 
-        state = torch.load(weight_path, map_location=torch.device('cpu'))
-
+        state = torch.load(weight_path)
         new_state = {}
         for k, v in state.items():
             name = k[7:] if k.startswith('module.') else k

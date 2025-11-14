@@ -4,6 +4,9 @@ import os
 import torch
 import torch.nn.functional as F
 from importlib import import_module
+
+import torchvision.transforms
+
 import misc.transforms as own_transforms
 from  misc.transforms import  check_image
 import torchvision.transforms as standard_transforms
@@ -218,7 +221,7 @@ def createValData(datasetname, Dataset, cfg_data):
         sub_val_dataset = Dataset([scene.strip()],
                                   cfg_data.DATA_PATH,
                                   main_transform=None,
-                                  img_transform= img_transform ,
+                                  img_transform= img_transform,
                                   train=False,
                                   datasetname=datasetname)
         sub_val_loader = DataLoader(sub_val_dataset, batch_size=cfg_data.VAL_BATCH_SIZE, num_workers=4,collate_fn=collate_fn,pin_memory=False )
@@ -252,6 +255,7 @@ def createValTestData(datasetname, Dataset, cfg_data, frame_interval, skip_flag,
             standard_transforms.Normalize(*cfg_data.MEAN_STD)
         ])
         main_transform = test_transform(cfg_data)
+        # main_transform = torchvision.transforms.Resize((768, 1024))
         with open(os.path.join(cfg_data.DATA_PATH, eval('cfg_data.{}_LST'.format(mode.upper()))), 'r') as txt:
             scene_names = txt.readlines()
             scene_names = [i.strip() for i in scene_names]

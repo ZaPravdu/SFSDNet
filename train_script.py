@@ -42,9 +42,6 @@ def get_callbacks(monitor, monitor_mode, project_name, experiment_name, patience
     return callbacks
 
 
-def collate_fn(data):
-    return data
-
 
 def main():
     os.environ['WANDB_MODE'] = 'offline'
@@ -60,6 +57,7 @@ def main():
     experiment_name = 'VGGAE-T'
     epochs = 20
     batch_size = 64
+    # weight_path = ''
     model = model_assembler.VGGAE(lr=lr, weight_decay=weight_decay,
                                      freeze_backbone=freeze_backbone, max_epochs=epochs)
 
@@ -70,12 +68,15 @@ def main():
 
     val_frame_intervals = cfg_data.VAL_FRAME_INTERVALS
     distributed = False
+    # scenes, restore_transform = datasets.loading_testset(data_mode, 1, False, mode='test')
     train_loader, sampler_train, val_loader, restore_transform = \
         datasets.loading_data(cfg.DATASET, val_frame_intervals, distributed, is_main_process())
 
     val_dataset = []
-    for L in val_loader:
+
+    for i, L in enumerate(val_loader):
         val_dataset.append(L[1].dataset)
+
     val_dataset = torch.utils.data.ConcatDataset(val_dataset)
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=1, shuffle=False, drop_last=False,
                                              collate_fn=datasets.collate_fn)
@@ -108,7 +109,7 @@ def main():
 
     trainer.fit(
         model, train_loader, val_loader,
-        # ckpt_path='weight/VIC/VGGAE/VGGAE-latest.ckpt'
+        # ckpt_path='weight/VIC/VGGAE-T/VGGAE-T-latest.ckpt'
     )
 
 

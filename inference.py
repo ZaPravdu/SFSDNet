@@ -11,7 +11,7 @@ from model.VIC import Video_Counter
 
 # load model
 
-state = torch.load('./ep_120_iter_105000_mae_10.119_mse_13.722_seq_MAE_29.751_WRAE_25.237_MIAE_3.157_MOAE_2.663.pth')
+state = torch.load('./sdnet.pth')
 new_state = {}
 for k, v in state.items():
     name = k[7:] if k.startswith('module.') else k
@@ -25,7 +25,7 @@ model = Video_Counter(cfg, cfg_data)
 model.load_state_dict(new_state, strict=True)
 model.eval()
 # load data
-scenes, restore_transform = datasets.loading_testset(data_mode, 4, False, mode='test')
+scenes, restore_transform = datasets.loading_testset(data_mode, 1, False, mode='test')
 
 
 def calculate_mae(output: torch.Tensor, target: torch.Tensor):
