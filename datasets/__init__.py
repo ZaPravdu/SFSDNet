@@ -217,14 +217,15 @@ def createValData(datasetname, Dataset, cfg_data):
         standard_transforms.ToTensor(),
         standard_transforms.Normalize(*cfg_data.MEAN_STD)
     ])
-
+    main_transform = train_resize_transform(cfg_data.TRAIN_SIZE[0], cfg_data.TRAIN_SIZE[1], flip=False)
     val_loader = []
     with open(os.path.join( cfg_data.DATA_PATH, cfg_data.VAL_LST), 'r') as txt:
         scene_names = txt.readlines()
+
     for scene in scene_names:
         sub_val_dataset = Dataset([scene.strip()],
                                   cfg_data.DATA_PATH,
-                                  main_transform=None,
+                                  main_transform=main_transform,
                                   img_transform= img_transform,
                                   train=False,
                                   datasetname=datasetname)

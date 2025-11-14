@@ -8,6 +8,7 @@ from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as standard_transforms
 
+import model_assembler
 from config import cfg
 import datasets
 
@@ -16,9 +17,8 @@ from model.VIC import Video_Counter
 
 # load model
 
-
 def calculate_mae(output: torch.Tensor, target: torch.Tensor):
-    error = (target-output).abs()
+    error = np.abs(target-output)
     return error
 
 
@@ -53,18 +53,11 @@ def main():
         for line in f.readlines():
             scene_names.append(line.strip('\n'))
 
-    state = torch.load('./sdnet.pth')
-    new_state = {}
-    for k, v in state.items():
-        name = k[7:] if k.startswith('module.') else k
-        new_state[name] = v
+    model = model_assembler.VGGAE.load_from_checkpoint('./weight/VGGAE-T/epoch=03-val_loss=0.8124.ckpt')
 
     data_mode = cfg.DATASET
     datasetting = import_module(f'datasets.setting.{data_mode}')
-    cfg_data = datasetting.cfg_data
 
-    model = Video_Counter(cfg, cfg_data)
-    model.load_state_dict(new_state, strict=True)
     model.eval()
     model = model.to(device)
     # load data
@@ -72,8 +65,6 @@ def main():
     datasetting = import_module(f'datasets.setting.{data_mode}')
     cfg_data = datasetting.cfg_data
 
-    val_frame_intervals = cfg_data.VAL_FRAME_INTERVALS
-    distributed = False
     main_transform = datasets.train_resize_transform(cfg_data.TRAIN_SIZE[0], cfg_data.TRAIN_SIZE[1], flip=False)
     img_transform = standard_transforms.Compose([
         standard_transforms.ToTensor(),
@@ -112,25 +103,18 @@ def main():
                              collate_fn=datasets.collate_fn)
 
     # inference
-    for i, data in enumerate(tqdm(test_loader)):
-        images, targets = data
-        pre_global_den, gt_global_den, pre_share_den, gt_share_den, pre_in_out_den, gt_in_out_den, all_loss = model(images.to(device),
-                                                                                                                        targets)
+    with torch.no_grad():
+        for i, data in enumerate(tqdm(test_loader)):
+            images, targets = data
+            recon = model(images.to(device))
+            recon_mae, recon_mse = calculate_error(recon.detach().cpu().numpy(), images.detach().cpu().numpy())
 
-        global_den_mae, global_den_mse = calculate_error(pre_global_den, gt_global_den)
-        share_den_mae, share_den_mse = calculate_error(pre_share_den, gt_share_den)
-        io_den_mae, io_den_mse = calculate_error(pre_in_out_den, gt_in_out_den)
+            for j, target in enumerate(targets, 0):
+                scene = target['scene_name']
+                frame = target['frame']
 
-        for j, target in enumerate(targets, 0):
-            scene = target['scene_name']
-            frame = target['frame']
-
-            save_npy(global_den_mae[j].detach().cpu().numpy(), 'SDNet_error_map', scene, 'global', frame, 'mae')
-            save_npy(global_den_mse[j].detach().cpu().numpy(), 'SDNet_error_map', scene, 'global', frame, 'mse')
-            save_npy(share_den_mae[j].detach().cpu().numpy(), 'SDNet_error_map', scene, 'global', frame, 'mae')
-            save_npy(share_den_mse[j].detach().cpu().numpy(), 'SDNet_error_map', scene, 'global', frame, 'mse')
-            save_npy(io_den_mae[j].detach().cpu().numpy(), 'SDNet_error_map', scene, 'global', frame, 'mae')
-            save_npy(io_den_mse[j].detach().cpu().numpy(), 'SDNet_error_map', scene, 'global', frame, 'mse')
+                save_npy(recon_mae[j], 'VGGAE_error_map', scene, 'recon', frame, 'mae')
+                save_npy(recon_mse[j], 'VGGAE_error_map', scene, 'recon', frame, 'mse')
 
 
     # ae_path = 'weight/VIC/VGGAE/epoch=03-val_loss=0.7279.ckpt'
