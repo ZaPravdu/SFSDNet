@@ -19,7 +19,7 @@ import model_assembler
 
 import glob
 
-torch.set_float32_matmul_precision('medium')
+# torch.set_float32_matmul_precision('medium')
 def get_callbacks(monitor, monitor_mode, project_name, experiment_name, patience=3):
     checkpoint_callback = ModelCheckpoint(
         monitor=monitor,
@@ -47,8 +47,8 @@ def get_callbacks(monitor, monitor_mode, project_name, experiment_name, patience
 def main():
     os.environ['WANDB_MODE'] = 'offline'
 
-    # project_name = 'VIC'
-    project_name='test'
+    project_name = 'VIC'
+    # project_name='test'
 
     freeze_backbone = True
 
@@ -59,7 +59,9 @@ def main():
     epochs = 20
     batch_size = 64
     # weight_path = ''
-    model = model_assembler.VGGAE(lr=lr, weight_decay=weight_decay,
+    # model = model_assembler.VGGAE(lr=lr, weight_decay=weight_decay,
+                                    #  freeze_backbone=freeze_backbone, max_epochs=epochs)
+    model = model_assembler.SFSDNet(lr=lr, weight_decay=weight_decay,
                                      freeze_backbone=freeze_backbone, max_epochs=epochs)
 
     # DataLoader
@@ -101,9 +103,10 @@ def main():
     trainer = Trainer(
         callbacks=callbacks,
         max_epochs=epochs, accelerator='gpu',
+        gpus=1,
         logger=wandb_logger, default_root_dir=f'./weight/{project_name}',
         log_every_n_steps=1,
-        precision='bf16-mixed',
+        precision='bf16',
         fast_dev_run=fast_dev_run,
         # accumulate_grad_batches=2,
     )

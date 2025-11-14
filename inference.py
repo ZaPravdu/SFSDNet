@@ -18,7 +18,7 @@ from model.VIC import Video_Counter
 
 
 def calculate_mae(output: torch.Tensor, target: torch.Tensor):
-    error = (target-output).abs()
+    error = np.abs(target-output)
     return error
 
 
@@ -112,25 +112,26 @@ def main():
                              collate_fn=datasets.collate_fn)
 
     # inference
-    for i, data in enumerate(tqdm(test_loader)):
-        images, targets = data
-        pre_global_den, gt_global_den, pre_share_den, gt_share_den, pre_in_out_den, gt_in_out_den, all_loss = model(images.to(device),
-                                                                                                                        targets)
+    with torch.no_grad():
+        for i, data in enumerate(tqdm(test_loader)):
+            images, targets = data
+            pre_global_den, gt_global_den, pre_share_den, gt_share_den, pre_in_out_den, gt_in_out_den, all_loss = model(images.to(device),
+                                                                                                                            targets)
+            del images
+            global_den_mae, global_den_mse = calculate_error(pre_global_den.detach().cpu().numpy(), gt_global_den.detach().cpu().numpy())
+            share_den_mae, share_den_mse = calculate_error(pre_share_den.detach().cpu().numpy(), gt_share_den.detach().cpu().numpy())
+            io_den_mae, io_den_mse = calculate_error(pre_in_out_den.detach().cpu().numpy(), gt_in_out_den.detach().cpu().numpy())
 
-        global_den_mae, global_den_mse = calculate_error(pre_global_den, gt_global_den)
-        share_den_mae, share_den_mse = calculate_error(pre_share_den, gt_share_den)
-        io_den_mae, io_den_mse = calculate_error(pre_in_out_den, gt_in_out_den)
+            for j, target in enumerate(targets, 0):
+                scene = target['scene_name']
+                frame = target['frame']
 
-        for j, target in enumerate(targets, 0):
-            scene = target['scene_name']
-            frame = target['frame']
-
-            save_npy(global_den_mae[j].detach().cpu().numpy(), 'SDNet_error_map', scene, 'global', frame, 'mae')
-            save_npy(global_den_mse[j].detach().cpu().numpy(), 'SDNet_error_map', scene, 'global', frame, 'mse')
-            save_npy(share_den_mae[j].detach().cpu().numpy(), 'SDNet_error_map', scene, 'global', frame, 'mae')
-            save_npy(share_den_mse[j].detach().cpu().numpy(), 'SDNet_error_map', scene, 'global', frame, 'mse')
-            save_npy(io_den_mae[j].detach().cpu().numpy(), 'SDNet_error_map', scene, 'global', frame, 'mae')
-            save_npy(io_den_mse[j].detach().cpu().numpy(), 'SDNet_error_map', scene, 'global', frame, 'mse')
+                save_npy(global_den_mae[j], 'SDNet_error_map', scene, 'global', frame, 'mae')
+                save_npy(global_den_mse[j], 'SDNet_error_map', scene, 'global', frame, 'mse')
+                save_npy(share_den_mae[j], 'SDNet_error_map', scene, 'global', frame, 'mae')
+                save_npy(share_den_mse[j], 'SDNet_error_map', scene, 'global', frame, 'mse')
+                save_npy(io_den_mae[j], 'SDNet_error_map', scene, 'global', frame, 'mae')
+                save_npy(io_den_mse[j], 'SDNet_error_map', scene, 'global', frame, 'mse')
 
 
     # ae_path = 'weight/VIC/VGGAE/epoch=03-val_loss=0.7279.ckpt'
