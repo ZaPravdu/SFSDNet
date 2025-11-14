@@ -15,6 +15,7 @@ import torch.nn as nn
 import torchvision.models as models
 import torch.nn.functional as F
 
+
 class HyperModel(LightningModule):
     def __init__(self):
         super(HyperModel, self).__init__()
@@ -122,6 +123,7 @@ class VGGAE(HyperModel):
         self.init_weights(self.decode_layer2)
         self.init_weights(self.decode_layer3)
 
+
     def init_weights(self, module):
         for m in module.modules():
             if isinstance(m, nn.Conv2d):
@@ -179,7 +181,6 @@ class VGGAE(HyperModel):
 
         return x
 
-
     def encode(self, x):
         x = self.backbone(x)
         features = torch.unflatten(x, 1, (512, 7, 7))
@@ -228,20 +229,16 @@ class SFSDNet(HyperModel):
         self.model.load_state_dict(new_state,
                                     strict=True)
 
-        self.backbone = model.Extractor
-        self.share_cross_attention = model.share_cross_attention
-        self.share_cross_attention_norm = model.share_cross_attention_norm
-        self.feature_fuse = model.feature_fuse
+        # if self.freeze_backbone:
 
-        if self.freeze_backbone:
-            for p in self.backbone.parameters():
-                p.requires_grad = False
-            for p in self.share_cross_attention.parameters():
-                p.requires_grad = False
-            for p in self.share_cross_attention_norm.parameters():
-                p.requires_grad = False
-            for p in self.feature_fuse.parameters():
-                p.requires_grad = False
+        for p in self.model.global_decoder.parameters():
+            p.requires_grad = False
+        for p in self.model.share_decoder.parameters():
+            p.requires_grad = False
+        for p in self.model.in_out_decoder.parameters():
+            p.requires_grad = False
+        # for p in self.feature_fuse.parameters():
+        #     p.requires_grad = False
 
         self.init_loss_mask()
     def forward(self, img, target):
@@ -312,14 +309,17 @@ class SFSDNet(HyperModel):
         img, target = data
         # assert data.shape == (2, 3, 768, 1024), f'data.shape: {data.shape}'
         pre_global_den, gt_global_den, pre_share_den, gt_share_den, pre_in_out_den, gt_in_out_den, all_loss = self.forward(img, target)
-        loss_mask = self.create_patch_mask()
+        # loss_mask = self.create_patch_mask()
 
         batch_idx = torch.arange(0, data.shape[0])
         batch_idx = batch_idx.view(-1, 2)[:, [1, 0]].view_as(batch_idx)
-        L_c = F.mse_loss(output, data[batch_idx])
+        loss = 0
+        for key in all_loss:
+            loss += all_loss[key]
+        # L_c = F.mse_loss(output, data[batch_idx])
         # self.log(type + '_recon_loss', L_c, on_epoch=True, prog_bar=True, sync_dist=True)
 
-        return L_c
+        return loss
 
 
 class ConvBlock(nn.Module):
