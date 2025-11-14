@@ -179,6 +179,7 @@ class VGGAE(HyperModel):
 
         return x
 
+
     def encode(self, x):
         x = self.backbone(x)
         features = torch.unflatten(x, 1, (512, 7, 7))
@@ -193,6 +194,125 @@ class VGGAE(HyperModel):
         # assert data.shape == (2, 3, 768, 1024), f'data.shape: {data.shape}'
         output = self.forward(data)
         assert output.size()==data.size(), f'output: {output.size()}, data: {data.size()}'
+
+        batch_idx = torch.arange(0, data.shape[0])
+        batch_idx = batch_idx.view(-1, 2)[:, [1, 0]].view_as(batch_idx)
+        L_c = F.mse_loss(output, data[batch_idx])
+        # self.log(type + '_recon_loss', L_c, on_epoch=True, prog_bar=True, sync_dist=True)
+
+        return L_c
+
+
+class SFSDNet(HyperModel):
+    def __init__(self, lr=0.0001, weight_decay=1e-6,
+                 weight_path='./sdnet.pth',
+                 freeze_backbone=True, max_epochs=10):
+        super().__init__()
+        # self.orthogonal_loss = orthogonal_loss
+        self.freeze_backbone = freeze_backbone
+        self.lr = lr
+        self.weight_decay = weight_decay
+        self.max_epochs = max_epochs
+
+        data_mode = cfg.DATASET
+        datasetting = import_module(f'datasets.setting.{data_mode}')
+        cfg_data = datasetting.cfg_data
+
+        state = torch.load(weight_path)
+        new_state = {}
+        for k, v in state.items():
+            name = k[7:] if k.startswith('module.') else k
+            new_state[name] = v
+
+        self.model = Video_Counter(cfg, cfg_data)
+        self.model.load_state_dict(new_state,
+                                    strict=True)
+
+        self.backbone = model.Extractor
+        self.share_cross_attention = model.share_cross_attention
+        self.share_cross_attention_norm = model.share_cross_attention_norm
+        self.feature_fuse = model.feature_fuse
+
+        if self.freeze_backbone:
+            for p in self.backbone.parameters():
+                p.requires_grad = False
+            for p in self.share_cross_attention.parameters():
+                p.requires_grad = False
+            for p in self.share_cross_attention_norm.parameters():
+                p.requires_grad = False
+            for p in self.feature_fuse.parameters():
+                p.requires_grad = False
+
+        self.init_loss_mask()
+    def forward(self, img, target):
+        output = self.model(img, target)
+        return output
+
+    def init_loss_mask(self):
+        pass
+        # self.loss_masks={'scene':{'1': {'global_mask': None, 'share_mask'}}}
+    def create_patch_mask(self, recon_error_map, patch_size=16, threshold_ratio=0.3, method='percentile'):
+        """
+        基于重建误差创建patch级别的mask
+
+        Args:
+            recon_error_map: 重建误差矩阵 [H, W]
+            patch_size: patch大小
+            threshold_ratio: 阈值比例 (0-1)
+            method: 阈值选择方法 ('percentile', 'mean', 'median')
+
+        Returns:
+            patch_mask: 二值mask [H//patch_size, W//patch_size]
+            pixel_mask: 上采样到原图大小的mask [H, W]
+        """
+        H, W = recon_error_map.shape
+
+        # 确保尺寸能被patch_size整除
+        H_patches = H // patch_size
+        W_patches = W // patch_size
+        H_crop = H_patches * patch_size
+        W_crop = W_patches * patch_size
+
+        # 裁剪到可整除的尺寸
+        recon_error_crop = recon_error_map[:H_crop, :W_crop]
+
+        # 重塑为patch视图 [n_patches_h, n_patches_w, patch_size, patch_size]
+        patches = recon_error_crop.reshape(H_patches, patch_size, W_patches, patch_size)
+        patches = patches.transpose(0, 2, 1, 3)  # [H_patches, W_patches, patch_size, patch_size]
+
+        # 计算每个patch的平均重建误差 [H_patches, W_patches]
+        patch_errors = np.mean(patches, axis=(2, 3))
+
+        # 根据阈值方法确定阈值
+        if method == 'percentile':
+            threshold = np.percentile(patch_errors, threshold_ratio * 100)
+        elif method == 'mean':
+            threshold = np.mean(patch_errors) * threshold_ratio
+        elif method == 'median':
+            threshold = np.median(patch_errors) * threshold_ratio
+        else:
+            raise ValueError(f"未知的阈值方法: {method}")
+
+        # 创建patch级别的mask (True表示可靠patch)
+        patch_mask = patch_errors <= threshold
+
+        # 将patch mask上采样到像素级别
+        pixel_mask = np.kron(patch_mask, np.ones((patch_size, patch_size)))
+
+        # 如果原图有不能整除的边界，填充为False
+        if H_crop < H or W_crop < W:
+            full_mask = np.zeros((H, W), dtype=bool)
+            full_mask[:H_crop, :W_crop] = pixel_mask
+            pixel_mask = full_mask
+
+        # return patch_mask, pixel_mask, patch_errors
+        return patch_mask
+
+    def calculate_loss(self, data, type):
+        img, target = data
+        # assert data.shape == (2, 3, 768, 1024), f'data.shape: {data.shape}'
+        pre_global_den, gt_global_den, pre_share_den, gt_share_den, pre_in_out_den, gt_in_out_den, all_loss = self.forward(img, target)
+        loss_mask = self.create_patch_mask()
 
         batch_idx = torch.arange(0, data.shape[0])
         batch_idx = batch_idx.view(-1, 2)[:, [1, 0]].view_as(batch_idx)

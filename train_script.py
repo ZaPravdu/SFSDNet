@@ -19,6 +19,7 @@ import model_assembler
 
 import glob
 
+torch.set_float32_matmul_precision('medium')
 def get_callbacks(monitor, monitor_mode, project_name, experiment_name, patience=3):
     checkpoint_callback = ModelCheckpoint(
         monitor=monitor,
@@ -46,8 +47,8 @@ def get_callbacks(monitor, monitor_mode, project_name, experiment_name, patience
 def main():
     os.environ['WANDB_MODE'] = 'offline'
 
-    project_name = 'VIC'
-    # project_name='test'
+    # project_name = 'VIC'
+    project_name='test'
 
     freeze_backbone = True
 

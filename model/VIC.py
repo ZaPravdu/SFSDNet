@@ -97,7 +97,7 @@ class Video_Counter(nn.Module):
         self.global_decoder = GlobalDecoder()
         self.share_decoder = ShareDecoder()
         self.in_out_decoder = InOutDecoder()
-        self.criterion = torch.nn.MSELoss()
+        self.criterion = torch.nn.MSELoss(reduction='none')
         self.Gaussian = Gaussianlayer()
         
     def forward(self, img, target):
@@ -190,7 +190,7 @@ class Video_Counter(nn.Module):
         assert pre_share_den.size() == gt_share_den.size()
         share_mse_loss = self.criterion(pre_share_den, gt_share_den * self.cfg_data.DEN_FACTOR)
         pre_share_den = pre_share_den.detach() / self.cfg_data.DEN_FACTOR
-        all_loss['share'] = share_mse_loss*10
+        all_loss['share'] = share_mse_loss * 10
 
         gt_in_out_den = self.Gaussian(gt_in_out_dot_map)
         assert pre_in_out_den.size() == gt_in_out_den.size()

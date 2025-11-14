@@ -95,10 +95,13 @@ class test_transform(object):
         return img, target
 
 class train_resize_transform(object):
-    def __init__(self, new_h, new_w):
+    def __init__(self, new_h, new_w, flip=True):
         self.new_h = new_h
         self.new_w = new_w
-        self.horizontal_flip = own_transforms.RandomHorizontallyFlip()
+        if flip:
+            self.horizontal_flip = own_transforms.RandomHorizontallyFlip()
+        else:
+            self.horizontal_flip = None
 
     def __call__(self, img, target):
         w, h = img.size
@@ -111,8 +114,9 @@ class train_resize_transform(object):
         target["points"][:, 0] = torch.clamp(target["points"][:, 0], min=0, max=self.new_w-1)
         target["points"][:, 1] = torch.clamp(target["points"][:, 1], min=0, max=self.new_h-1)
 
-        self.flip_flag = round(random.random())
-        img, target = self.horizontal_flip(img, target, self.flip_flag)
+        if self.horizontal_flip is not None:
+            self.flip_flag = round(random.random())
+            img, target = self.horizontal_flip(img, target, self.flip_flag)
         return img, target
 
 class train_transform(object):
