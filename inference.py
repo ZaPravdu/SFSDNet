@@ -44,7 +44,8 @@ def save_npy(data, model_folder, scene, output_type, frame, error_type):
 
 
 def main():
-    scene_path = './MovingDroneCrowd/train.txt'
+    dataset_path = 'MovingDroneCrowd'
+    scene_path = './test.txt'
     scene_names = []
 
     with open(scene_path, 'r') as f:
@@ -79,7 +80,7 @@ def main():
 
     last_scene_names = []
     for scene_name in scene_names:
-        root = os.path.join(cfg_data.DATA_PATH, 'frames', scene_name)
+        root = os.path.join(dataset_path, 'frames', scene_name)
         if '/' in scene_name:
             scene_name, clip_names = scene_name.split('/')
             clip_names = [clip_names]
@@ -95,7 +96,7 @@ def main():
     fullset = []
     for scene in scene_names:
         sub_dataset = TestDataset(scene_name=scene,
-                                  base_path=cfg_data.DATA_PATH,
+                                  base_path=dataset_path,
                                   main_transform=main_transform,
                                   img_transform=img_transform,
                                   interval=cfg_data.VAL_FRAME_INTERVALS,
