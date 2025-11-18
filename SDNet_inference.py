@@ -115,9 +115,13 @@ def main():
             images, targets = data
             pre_global_den, gt_global_den, pre_share_den, gt_share_den, pre_in_out_den, gt_in_out_den, all_loss = model(images.to(device),targets)
 
-            global_den_mae, global_den_mse = calculate_error(pre_global_den.detach().cpu().numpy(), gt_global_den.detach().cpu().numpy())
-            share_den_mae, share_den_mse = calculate_error(pre_share_den.detach().cpu().numpy(), gt_share_den.detach().cpu().numpy())
-            io_den_mae, io_den_mse = calculate_error(pre_in_out_den.detach().cpu().numpy(), gt_in_out_den.detach().cpu().numpy())
+            pre_global_den = pre_global_den.detach() / cfg_data.DEN_FACTOR
+            pre_share_den = pre_share_den.detach() / cfg_data.DEN_FACTOR
+            pre_in_out_den = pre_in_out_den.detach() / cfg_data.DEN_FACTOR
+
+            global_den_mae, global_den_mse = calculate_error(pre_global_den.cpu().numpy(), gt_global_den.detach().cpu().numpy())
+            share_den_mae, share_den_mse = calculate_error(pre_share_den.cpu().numpy(), gt_share_den.detach().cpu().numpy())
+            io_den_mae, io_den_mse = calculate_error(pre_in_out_den.cpu().numpy(), gt_in_out_den.detach().cpu().numpy())
 
             for j, target in enumerate(targets, 0):
                 scene = target['scene_name']
