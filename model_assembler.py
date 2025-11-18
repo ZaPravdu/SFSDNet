@@ -234,14 +234,14 @@ class SFSDNet(HyperModel):
 
         # if self.freeze_backbone:
 
-        for p in self.model.global_decoder.parameters():
-            p.requires_grad = False
-        for p in self.model.share_decoder.parameters():
-            p.requires_grad = False
-        for p in self.model.in_out_decoder.parameters():
-            p.requires_grad = False
-        # for p in self.model.Extractor.parameters():
+        # for p in self.model.global_decoder.parameters():
+            # p.requires_grad = False
+        # for p in self.model.share_decoder.parameters():
         #     p.requires_grad = False
+        # for p in self.model.in_out_decoder.parameters():
+        #     p.requires_grad = False
+        for p in self.model.Extractor.parameters():
+            p.requires_grad = False
 
     def forward(self, img, target):
         output = self.model(img, target)
@@ -264,8 +264,13 @@ class SFSDNet(HyperModel):
             file_name = f'{frame}.npy'
             pseudo_dens_path = os.path.join('pseudo_density_map', scene, sub_scene, file_name)
             pseudo_dens_map.append(np.load(pseudo_dens_path))
+            # print(pseudo_dens_map[0].shape)
+
         pseudo_dens_map = torch.Tensor(np.stack(pseudo_dens_map))
-        general_pre = torch.stack([pre_global_den, pre_share_den, pre_in_out_den], dim=1)
+        pseudo_dens_map = pseudo_dens_map.to(self.device)
+        pseudo_dens_map.requires_grad = False
+        
+        general_pre = torch.cat([pre_global_den, pre_share_den, pre_in_out_den], dim=1)
 
         loss = F.mse_loss(general_pre, pseudo_dens_map, reduction='none')
 
