@@ -108,8 +108,10 @@ class Dataset(data.Dataset):
             ids0 = target0['person_id']
             ids1 = target1['person_id']
 
-            share_mask0 = torch.isin(ids0, ids1)
-            share_mask1 = torch.isin(ids1, ids0)
+            share_mask0 = (ids0.unsqueeze(1) == ids1).any(dim=1)
+            share_mask1 = (ids1.unsqueeze(1) == ids0).any(dim=1)
+            # share_mask0 = torch.isin(ids0, ids1)
+            # share_mask1 = torch.isin(ids1, ids0)
 
             outflow_mask = torch.logical_not(share_mask0)
             inflow_mask = torch.logical_not(share_mask1)
@@ -368,8 +370,10 @@ class TestDataset(data.Dataset):
                     ids0 = target1['person_id']
                     ids1 = target2['person_id']
 
-                    share_mask0 = torch.isin(ids0, ids1)
-                    share_mask1 = torch.isin(ids1, ids0)
+                    share_mask0 = (ids0.unsqueeze(1) == ids1).any(dim=1)
+                    share_mask1 = (ids1.unsqueeze(1) == ids0).any(dim=1)
+                    # share_mask0 = torch.isin(ids0, ids1)
+                    # share_mask1 = torch.isin(ids1, ids0)
 
                     outflow_mask = torch.logical_not(share_mask0)
                     inflow_mask = torch.logical_not(share_mask1)
