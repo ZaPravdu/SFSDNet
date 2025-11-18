@@ -125,10 +125,10 @@ def main():
 
                 save_npy(global_den_mae[j], 'SDNet_error_map', scene, 'global', frame, 'mae')
                 save_npy(global_den_mse[j], 'SDNet_error_map', scene, 'global', frame, 'mse')
-                save_npy(share_den_mae[j], 'SDNet_error_map', scene, 'global', frame, 'mae')
-                save_npy(share_den_mse[j], 'SDNet_error_map', scene, 'global', frame, 'mse')
-                save_npy(io_den_mae[j], 'SDNet_error_map', scene, 'global', frame, 'mae')
-                save_npy(io_den_mse[j], 'SDNet_error_map', scene, 'global', frame, 'mse')
+                save_npy(share_den_mae[j], 'SDNet_error_map', scene, 'share', frame, 'mae')
+                save_npy(share_den_mse[j], 'SDNet_error_map', scene, 'share', frame, 'mse')
+                save_npy(io_den_mae[j], 'SDNet_error_map', scene, 'io', frame, 'mae')
+                save_npy(io_den_mse[j], 'SDNet_error_map', scene, 'io', frame, 'mse')
 
 
     # ae_path = 'weight/VIC/VGGAE/epoch=03-val_loss=0.7279.ckpt'

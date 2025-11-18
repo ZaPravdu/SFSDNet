@@ -15,6 +15,8 @@ from PIL import Image
 import re
 from copy import deepcopy
 import random
+
+
 class Dataset(data.Dataset):
     """
     Dataset class.
@@ -68,6 +70,7 @@ class Dataset(data.Dataset):
         self.main_transforms = main_transform
         self.img_transforms = img_transform
         self.frame_intervals = frame_intervals
+
     def __len__(self):
         return len(self.imgs_path)
 
@@ -241,6 +244,7 @@ def UAVVIC_ImgPath_and_Target(base_path, scene_name):
 
     return img_path, labels
 
+
 def MDC_ImgPath_and_Target(base_path, scene_name):
     img_path = []
     labels=[]
@@ -274,6 +278,7 @@ def MDC_ImgPath_and_Target(base_path, scene_name):
         labels.append({'scene_name':scene_name,'frame':int(img_id.split('.')[0]), 'person_id':ids, 'points':points})
     return img_path, labels
 
+
 def MDC_ImgPath(base_path, scene_name):
     img_path = []
     root  = osp.join(base_path, 'frames', scene_name)
@@ -286,6 +291,7 @@ def MDC_ImgPath(base_path, scene_name):
         img_path.append(single_path)
 
     return img_path
+
 
 class TestDataset(data.Dataset):
     """
@@ -337,7 +343,6 @@ class TestDataset(data.Dataset):
 
     def __len__(self):
         return len(self.imgs_path) - self.interval
-
 
     def __getitem__(self, index):
         if self.valid[index]:

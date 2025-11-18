@@ -119,6 +119,7 @@ class train_resize_transform(object):
             img, target = self.horizontal_flip(img, target, self.flip_flag)
         return img, target
 
+
 class train_transform(object):
     def __init__(self, cfg_data, check_dim = True):
         self.cfg_data = cfg_data
@@ -183,17 +184,19 @@ def collate_fn(batch):
         pass
     return img_tensors, labels
 
-def createTrainData(datasetname, Dataset, cfg_data, distributed):
+
+def createTrainData(datasetname, Dataset, cfg_data, distributed, disable_strong_aug=True):
     img_transform = standard_transforms.Compose([
         standard_transforms.ToTensor(),
         standard_transforms.Normalize(*cfg_data.MEAN_STD)
     ])
 
+
     pair_transform = train_pair_transform(cfg_data)
-    resize_transform = train_resize_transform(cfg_data.TRAIN_SIZE[0], cfg_data.TRAIN_SIZE[1])
+    resize_transform = train_resize_transform(cfg_data.TRAIN_SIZE[0], cfg_data.TRAIN_SIZE[1], flip=False)
     train_set = Dataset(cfg_data.TRAIN_LST,
                         cfg_data.DATA_PATH,
-                        main_transform= resize_transform if datasetname == "UAVVIC" else pair_transform,
+                        main_transform= resize_transform if disable_strong_aug else pair_transform,
                         img_transform=img_transform,
                         train=True,
                         datasetname=datasetname,
@@ -202,7 +205,7 @@ def createTrainData(datasetname, Dataset, cfg_data, distributed):
     train_loader = DataLoader(train_set, 
                               batch_size=cfg_data.TRAIN_BATCH_SIZE, 
                               sampler=sampler_train, 
-                              shuffle=False,
+                              shuffle=True,
                               num_workers=8,
                               collate_fn=collate_fn,
                               persistent_workers=True,
@@ -210,9 +213,9 @@ def createTrainData(datasetname, Dataset, cfg_data, distributed):
     print('dataset is {}, training images num is {}'.format(datasetname, train_set.__len__()))
 
     return  train_loader, sampler_train
+
+
 def createValData(datasetname, Dataset, cfg_data):
-
-
     img_transform = standard_transforms.Compose([
         standard_transforms.ToTensor(),
         standard_transforms.Normalize(*cfg_data.MEAN_STD)
@@ -233,11 +236,14 @@ def createValData(datasetname, Dataset, cfg_data):
         val_loader.append(sub_val_loader)
 
     return  val_loader
+
+
 def createRestore(mean_std):
     return standard_transforms.Compose([
         own_transforms.DeNormalize(*mean_std),
         standard_transforms.ToPILImage()
     ])
+
 
 def loading_data(datasetname, val_interval, distributed, is_main):
     if datasetname != "MovingDroneCrowd":
@@ -252,6 +258,7 @@ def loading_data(datasetname, val_interval, distributed, is_main):
     val_loader = createValTestData(datasetname, Dataset, cfg_data, val_interval, False, is_main, mode ='val')
 
     return train_loader, sampler_train, val_loader, restore_transform
+
 
 def createValTestData(datasetname, Dataset, cfg_data, frame_interval, skip_flag, is_main, mode ='val'):
     if is_main:

@@ -44,7 +44,7 @@ def get_callbacks(monitor, monitor_mode, project_name, experiment_name, patience
 
 
 def main():
-    os.environ['WANDB_MODE'] = 'offline'
+    # os.environ['WANDB_MODE'] = 'offline'
 
     # project_name = 'VIC'
     project_name='test'
@@ -54,12 +54,13 @@ def main():
     lr = 0.0001
     weight_decay = 1e-6
 
-    experiment_name = 'VGGAE-T'
-    epochs = 20
+    experiment_name = 'VGGAE-T-feature_merge-no_flip-train'
+    epochs = 100
     batch_size = 64
     # weight_path = ''
-    model = model_assembler.VGGAE(lr=lr, weight_decay=weight_decay,
-                                     freeze_backbone=freeze_backbone, max_epochs=epochs)
+    # model = model_assembler.VGGAE(lr=lr, weight_decay=weight_decay,
+    #                                  freeze_backbone=freeze_backbone, max_epochs=epochs)
+    model = model_assembler.SFSDNet(max_epochs=epochs)
 
     # DataLoader
     data_mode = cfg.DATASET
@@ -94,8 +95,8 @@ def main():
         # wandb_logger = None
         fast_dev_run = False
 
-    callbacks = get_callbacks(monitor='val_loss', monitor_mode='min', project_name=project_name,
-                              experiment_name=experiment_name)
+    callbacks = get_callbacks(monitor='train_loss_epoch', monitor_mode='min', project_name=project_name,
+                              experiment_name=experiment_name, patience=3)
 
     trainer = Trainer(
         callbacks=callbacks,
@@ -104,12 +105,13 @@ def main():
         log_every_n_steps=1,
         precision='bf16-mixed',
         fast_dev_run=fast_dev_run,
-        # accumulate_grad_batches=2,
+        num_sanity_val_steps=0
+        # accumulate_grad_batches=4,
     )
 
     trainer.fit(
-        model, train_loader, val_loader,
-        # ckpt_path='weight/VIC/VGGAE-T/VGGAE-T-latest.ckpt'
+        model, train_loader, None,
+        # ckpt_path='weight/VIC/VGGAE-T-feature_merge-no_flip-train/VGGAE-T-feature_merge-no_flip-train-latest.ckpt'
     )
 
 

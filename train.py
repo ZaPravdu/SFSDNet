@@ -14,6 +14,8 @@ from torch.nn import SyncBatchNorm
 from model.VIC import Video_Counter
 from misc.tools import is_main_process
 import timm.optim.optim_factory as optim_factory
+
+
 class Trainer():
     def __init__(self, cfg_data, pwd):
         self.exp_name = cfg.EXP_NAME
@@ -253,8 +255,9 @@ class Trainer():
 
         print_NWPU_summary_det(self, {'mae':mae, 'mse':mse, 'seq_MAE':MAE, 'WRAE':WRAE, 'MIAE': MIAE, 'MOAE': MOAE})
         torch.cuda.empty_cache()
-        
-if __name__=='__main__':
+
+
+if __name__ == '__main__':
     import os
     import numpy as np
     import torch

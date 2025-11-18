@@ -104,7 +104,6 @@ class FPN(nn.Module):
         return tuple(outs)
 
 
-
 class Conv2d(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, NL='relu', same_padding=False, bn=True, bias=True):
         super(Conv2d, self).__init__()

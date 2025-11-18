@@ -1,4 +1,4 @@
-import os
+import os.path
 
 import numpy as np
 from importlib import import_module
@@ -6,13 +6,13 @@ from importlib import import_module
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from config import cfg
+
 from model.VIC import Video_Counter
 import torch.optim
 from pytorch_lightning import LightningModule
 
 import torch
 import torch.nn as nn
-import torchvision.models as models
 import torch.nn.functional as F
 
 
@@ -22,19 +22,19 @@ class HyperModel(LightningModule):
 
     def training_step(self, batch, batch_idx):
         data = batch
-        loss = self.calculate_loss(data, type='train')
+        loss = self.calculate_loss(data, mode='train')
         self.log('train_loss', loss, on_epoch=True, prog_bar=True, sync_dist=True)
 
         return {'loss': loss}
 
     def validation_step(self, batch, batch_idx):
         data = batch
-        loss = self.calculate_loss(data, type='val')
+        loss = self.calculate_loss(data, mode='val')
         self.log('val_loss', loss, on_step=False, on_epoch=True, sync_dist=True, prog_bar=True)
 
         return {'val_loss': loss}
 
-    def calculate_loss(self, data, type):
+    def calculate_loss(self, data, mode):
         pass
 
     def configure_optimizers(self):
@@ -92,37 +92,40 @@ class VGGAE(HyperModel):
                 p.requires_grad = False
             for p in self.share_cross_attention_norm.parameters():
                 p.requires_grad = False
-            for p in self.feature_fuse.parameters():
-                p.requires_grad = False
+            # for p in self.feature_fuse.parameters():
+            #     p.requires_grad = False
 
         self.decode_layer3 = nn.Sequential(
             ConvBlock(256, 256),
             ConvBlock(256, 256),
             ConvBlock(256, 256),
-            nn.ConvTranspose2d(256, 256, kernel_size=2, stride=2),
+            nn.UpsamplingBilinear2d(scale_factor=2),
+            # nn.ConvTranspose2d(256, 256, kernel_size=2, stride=2),
         )
         self.decode_layer2 = nn.Sequential(
             ConvBlock(256, 256),
             ConvBlock(256, 256),
             ConvBlock(256, 256),
-            nn.ConvTranspose2d(256, 256, kernel_size=2, stride=2),
+            nn.UpsamplingBilinear2d(scale_factor=2),
+            # nn.ConvTranspose2d(256, 256, kernel_size=2, stride=2),
         )
         self.decode_layer1 = nn.Sequential(
             ConvBlock(256, 256),
             ConvBlock(256, 256),
             ConvBlock(256, 128),
-            nn.ConvTranspose2d(128, 128, kernel_size=2, stride=2),
+            nn.UpsamplingBilinear2d(scale_factor=2),
+            # nn.ConvTranspose2d(128, 128, kernel_size=2, stride=2),
             ConvBlock(128, 128),
             ConvBlock(128, 64),
-            nn.ConvTranspose2d(64, 64, kernel_size=2, stride=2),
+            nn.UpsamplingBilinear2d(scale_factor=2),
+            # nn.ConvTranspose2d(64, 64, kernel_size=2, stride=2),
             ConvBlock(64, 64),
-            nn.Conv2d(64,3, kernel_size=3, padding='same'),
+            nn.Conv2d(64, 3, kernel_size=3, padding='same'),
         )
 
         self.init_weights(self.decode_layer1)
         self.init_weights(self.decode_layer2)
         self.init_weights(self.decode_layer3)
-
 
     def init_weights(self, module):
         for m in module.modules():
@@ -190,7 +193,7 @@ class VGGAE(HyperModel):
 
         return features
 
-    def calculate_loss(self, data, type):
+    def calculate_loss(self, data, mode):
         data = data[0]
         # assert data.shape == (2, 3, 768, 1024), f'data.shape: {data.shape}'
         output = self.forward(data)
@@ -237,89 +240,42 @@ class SFSDNet(HyperModel):
             p.requires_grad = False
         for p in self.model.in_out_decoder.parameters():
             p.requires_grad = False
-        # for p in self.feature_fuse.parameters():
+        # for p in self.model.Extractor.parameters():
         #     p.requires_grad = False
 
-        self.init_loss_mask()
     def forward(self, img, target):
         output = self.model(img, target)
         return output
 
-    def init_loss_mask(self):
-        pass
-        # self.loss_masks={'scene':{'1': {'global_mask': None, 'share_mask'}}}
-    def create_patch_mask(self, recon_error_map, patch_size=16, threshold_ratio=0.3, method='percentile'):
-        """
-        基于重建误差创建patch级别的mask
+    def calculate_loss(self, data, mode):
+        images, targets = data
 
-        Args:
-            recon_error_map: 重建误差矩阵 [H, W]
-            patch_size: patch大小
-            threshold_ratio: 阈值比例 (0-1)
-            method: 阈值选择方法 ('percentile', 'mean', 'median')
-
-        Returns:
-            patch_mask: 二值mask [H//patch_size, W//patch_size]
-            pixel_mask: 上采样到原图大小的mask [H, W]
-        """
-        H, W = recon_error_map.shape
-
-        # 确保尺寸能被patch_size整除
-        H_patches = H // patch_size
-        W_patches = W // patch_size
-        H_crop = H_patches * patch_size
-        W_crop = W_patches * patch_size
-
-        # 裁剪到可整除的尺寸
-        recon_error_crop = recon_error_map[:H_crop, :W_crop]
-
-        # 重塑为patch视图 [n_patches_h, n_patches_w, patch_size, patch_size]
-        patches = recon_error_crop.reshape(H_patches, patch_size, W_patches, patch_size)
-        patches = patches.transpose(0, 2, 1, 3)  # [H_patches, W_patches, patch_size, patch_size]
-
-        # 计算每个patch的平均重建误差 [H_patches, W_patches]
-        patch_errors = np.mean(patches, axis=(2, 3))
-
-        # 根据阈值方法确定阈值
-        if method == 'percentile':
-            threshold = np.percentile(patch_errors, threshold_ratio * 100)
-        elif method == 'mean':
-            threshold = np.mean(patch_errors) * threshold_ratio
-        elif method == 'median':
-            threshold = np.median(patch_errors) * threshold_ratio
-        else:
-            raise ValueError(f"未知的阈值方法: {method}")
-
-        # 创建patch级别的mask (True表示可靠patch)
-        patch_mask = patch_errors <= threshold
-
-        # 将patch mask上采样到像素级别
-        pixel_mask = np.kron(patch_mask, np.ones((patch_size, patch_size)))
-
-        # 如果原图有不能整除的边界，填充为False
-        if H_crop < H or W_crop < W:
-            full_mask = np.zeros((H, W), dtype=bool)
-            full_mask[:H_crop, :W_crop] = pixel_mask
-            pixel_mask = full_mask
-
-        # return patch_mask, pixel_mask, patch_errors
-        return patch_mask
-
-    def calculate_loss(self, data, type):
-        img, target = data
         # assert data.shape == (2, 3, 768, 1024), f'data.shape: {data.shape}'
-        pre_global_den, gt_global_den, pre_share_den, gt_share_den, pre_in_out_den, gt_in_out_den, all_loss = self.forward(img, target)
+        pre_global_den, gt_global_den, pre_share_den, gt_share_den, pre_in_out_den, gt_in_out_den, gt_loss = self.forward(images, targets)
         # loss_mask = self.create_patch_mask()
 
-        batch_idx = torch.arange(0, data.shape[0])
-        batch_idx = batch_idx.view(-1, 2)[:, [1, 0]].view_as(batch_idx)
-        loss = 0
-        for key in all_loss:
-            loss += all_loss[key]
+        for key in gt_loss:
+            self.log(f'gt_{key}_loss', gt_loss[key], on_epoch=True, prog_bar=True, sync_dist=True)
+
+        pseudo_dens_map = []
+        for target in targets:
+            scene, sub_scene = target['scene_name'].split('/')
+            frame = target['frame']
+            file_name = f'{frame}.npy'
+            pseudo_dens_path = os.path.join('pseudo_density_map', scene, sub_scene, file_name)
+            pseudo_dens_map.append(np.load(pseudo_dens_path))
+        pseudo_dens_map = torch.Tensor(np.stack(pseudo_dens_map))
+        general_pre = torch.stack([pre_global_den, pre_share_den, pre_in_out_den], dim=1)
+
+        loss = F.mse_loss(general_pre, pseudo_dens_map, reduction='none')
+
+        for i, key in enumerate(['global', 'share', 'in_out']):
+            self.log(f'pseudo_{key}_loss', loss[:, i, :, :].mean(), on_epoch=True, prog_bar=True, sync_dist=True)
+
         # L_c = F.mse_loss(output, data[batch_idx])
         # self.log(type + '_recon_loss', L_c, on_epoch=True, prog_bar=True, sync_dist=True)
 
-        return loss
+        return loss.mean()
 
 
 class ConvBlock(nn.Module):
@@ -339,8 +295,8 @@ class ConvBlock(nn.Module):
             shortcut = 0
 
         x = self.conv(x)
-        x = F.relu(x, inplace=True)
-        x = self.norm(x+shortcut)
+        x = self.norm(x)
+        x = F.relu(x+shortcut, inplace=True)
 
         return x
 
