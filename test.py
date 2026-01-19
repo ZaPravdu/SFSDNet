@@ -52,6 +52,7 @@ def module2model(module_state_dict):
         state_dict[k] = v
     return state_dict
 
+
 def test(cfg_data):
     model = Video_Counter(cfg, cfg_data)
     Gaussian = Gaussianlayer()
@@ -206,6 +207,7 @@ def test(cfg_data):
     mae = sing_cnt_errors['mae'].avg
     mse = np.sqrt(sing_cnt_errors['mse'].avg)
     print('mae: %.2f, mse: %.2f' % (mae, mse))
+
 
 if __name__=='__main__':
     import os

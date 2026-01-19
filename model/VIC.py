@@ -97,7 +97,7 @@ class Video_Counter(nn.Module):
         self.global_decoder = GlobalDecoder()
         self.share_decoder = ShareDecoder()
         self.in_out_decoder = InOutDecoder()
-        self.criterion = torch.nn.MSELoss(reduction='none')
+        self.criterion = torch.nn.MSELoss()
         self.Gaussian = Gaussianlayer()
         
     def forward(self, img, target):

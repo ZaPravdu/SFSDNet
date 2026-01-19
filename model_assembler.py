@@ -3,6 +3,7 @@ import os.path
 import numpy as np
 from importlib import import_module
 
+from pytorch_lightning.callbacks import EarlyStopping
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from config import cfg
@@ -62,6 +63,7 @@ class VGGAE(HyperModel):
                  freeze_backbone=True, max_epochs=10):
         super().__init__()
         # self.orthogonal_loss = orthogonal_loss
+        self.reset_early_stop = False
         self.freeze_backbone = freeze_backbone
         self.lr = lr
         self.weight_decay = weight_decay
@@ -70,15 +72,17 @@ class VGGAE(HyperModel):
         data_mode = cfg.DATASET
         datasetting = import_module(f'datasets.setting.{data_mode}')
         cfg_data = datasetting.cfg_data
-
-        state = torch.load(weight_path)
-        new_state = {}
-        for k, v in state.items():
-            name = k[7:] if k.startswith('module.') else k
-            new_state[name] = v
         model = Video_Counter(cfg, cfg_data)
-        model.load_state_dict(new_state,
-                                strict=True)
+
+        if weight_path is not None:
+            state = torch.load(weight_path)
+            new_state = {}
+            for k, v in state.items():
+                name = k[7:] if k.startswith('module.') else k
+                new_state[name] = v
+
+            model.load_state_dict(new_state,
+                                    strict=True)
 
         self.backbone = model.Extractor
         self.share_cross_attention = model.share_cross_attention
@@ -92,8 +96,8 @@ class VGGAE(HyperModel):
                 p.requires_grad = False
             for p in self.share_cross_attention_norm.parameters():
                 p.requires_grad = False
-            # for p in self.feature_fuse.parameters():
-            #     p.requires_grad = False
+            for p in self.feature_fuse.parameters():
+                p.requires_grad = False
 
         self.decode_layer3 = nn.Sequential(
             ConvBlock(256, 256),
@@ -133,6 +137,35 @@ class VGGAE(HyperModel):
                 nn.init.xavier_uniform_(m.weight)
             if isinstance(m, nn.ConvTranspose2d):
                 nn.init.xavier_uniform_(m.weight)
+
+    def on_train_start(self):
+        """训练开始时访问并修改 callback 状态"""
+        print("=== 在模型类中重置 EarlyStopping ===")
+
+        # 访问 trainer 中的 callbacks
+        for callback in self.trainer.callbacks:
+            if isinstance(callback, EarlyStopping):
+                print(f"找到 EarlyStopping callback: {callback.monitor}")
+
+                if self.reset_early_stop:
+                    # 重置状态
+                    callback.best_score = torch.tensor(torch.inf)
+                    callback.wait_count = 0
+                    callback.stopped_epoch = 0
+
+                    # 重置内部状态（不同版本兼容）
+                    if hasattr(callback, '_best_score'):
+                        callback._best_score = None
+                    if hasattr(callback, '_wait_count'):
+                        callback._wait_count = 0
+
+                    print(f"✓ 已重置 {callback.monitor} 的状态")
+                    print(f"  最佳分数: {callback.best_score}")
+                    print(f"  等待计数: {callback.wait_count}")
+                else:
+                    print(f"保持 {callback.monitor} 的当前状态")
+                    print(f"  最佳分数: {callback.best_score}")
+                    print(f"  等待计数: {callback.wait_count}")
 
     def forward(self, img):
         features = self.backbone(img)
@@ -210,38 +243,42 @@ class VGGAE(HyperModel):
 class SFSDNet(HyperModel):
     def __init__(self, lr=0.0001, weight_decay=1e-6,
                  weight_path='./sdnet.pth',
-                 freeze_backbone=True, max_epochs=10):
+                 freeze_backbone=True, max_epochs=10, mask_type='mse'):
         super().__init__()
         # self.orthogonal_loss = orthogonal_loss
         self.freeze_backbone = freeze_backbone
         self.lr = lr
         self.weight_decay = weight_decay
         self.max_epochs = max_epochs
+        self.mask_type = mask_type
 
         data_mode = cfg.DATASET
         datasetting = import_module(f'datasets.setting.{data_mode}')
         cfg_data = datasetting.cfg_data
 
-        state = torch.load(weight_path)
-        new_state = {}
-        for k, v in state.items():
-            name = k[7:] if k.startswith('module.') else k
-            new_state[name] = v
-
         self.model = Video_Counter(cfg, cfg_data)
-        self.model.load_state_dict(new_state,
-                                    strict=True)
+        if weight_path is not None:
+            state = torch.load(weight_path)
+            new_state = {}
+            for k, v in state.items():
+                name = k[7:] if k.startswith('module.') else k
+                new_state[name] = v
+            self.model.load_state_dict(new_state,
+                                       strict=True)
+
+
+
 
         # if self.freeze_backbone:
 
-        # for p in self.model.global_decoder.parameters():
-        #     p.requires_grad = False
+        for p in self.model.global_decoder.parameters():
+            p.requires_grad = False
         for p in self.model.share_decoder.parameters():
             p.requires_grad = False
         for p in self.model.in_out_decoder.parameters():
             p.requires_grad = False
-        for p in self.model.Extractor.parameters():
-            p.requires_grad = False
+        # for p in self.model.Extractor.parameters():
+        #     p.requires_grad = False
 
     def forward(self, img, target):
         output = self.model(img, target)
@@ -258,27 +295,47 @@ class SFSDNet(HyperModel):
             self.log(f'gt_{key}_loss', gt_loss[key], on_epoch=True, prog_bar=True, sync_dist=True)
 
         pseudo_dens_map = []
-        for target in targets:
-            scene, sub_scene = target['scene_name'].split('/')
-            frame = target['frame']
-            file_name = f'{frame}.npy'
-            pseudo_dens_path = os.path.join('pseudo_density_map', scene, sub_scene, file_name)
-            pseudo_dens_map.append(np.load(pseudo_dens_path))
-        pseudo_dens_map = torch.Tensor(np.stack(pseudo_dens_map)*200)
-        pseudo_dens_map = pseudo_dens_map.to(self.device)
-        pseudo_dens_map.requires_grad = False
 
-        general_pre = torch.cat([pre_global_den, pre_share_den, pre_in_out_den], dim=1)
+        assert targets[0]['scene_name'] == targets[1]['scene_name']
 
-        loss = F.mse_loss(general_pre, pseudo_dens_map*200, reduction='none')
+        scene, sub_scene = targets[0]['scene_name'].split('/')
+        frame_pair = str(targets[0]['frame']) + str(targets[1]['frame'])
+        file_name = f'{frame_pair}.npy'
+        pseudo_dens_main_path = os.path.join('pseudo_density_map', scene, sub_scene, 'density_map')
+        pseudo_dens_path = os.path.join(pseudo_dens_main_path, file_name)
+        pseudo_dens_map = np.load(pseudo_dens_path)
 
-        for i, key in enumerate(['global', 'share', 'in_out']):
-            self.log(f'pseudo_{key}_loss', loss[:, i, :, :].mean(), on_epoch=True, prog_bar=True, sync_dist=True)
+        pseudo_global_dens, pseudo_share_dens, pseudo_in_out_dens = torch.Tensor(pseudo_dens_map, device=self.device)
+
+        # pseudo_dens_map = torch.Tensor(np.stack(pseudo_dens_map)*200)
+        # pseudo_dens_map = pseudo_dens_map.to(self.device)
+        # pseudo_dens_map.requires_grad = False
+
+        # general_pre = torch.cat([pre_global_den, pre_share_den, pre_in_out_den], dim=1)
+        if self.mask_type is not None:
+            mask_main_path = os.path.join('pseudo_density_map', scene, sub_scene, f'{self.mask_type}_mask')
+            loss_mask = torch.tensor(np.load(mask_main_path, file_name), device=self.device)
+        else:
+            loss_mask = torch.ones_like(pre_share_den, device=self.device, dtype=torch.bool)
+        L_g = F.mse_loss(pre_global_den[loss_mask], pseudo_global_dens[loss_mask])
+        L_s = F.mse_loss(pre_share_den[loss_mask], pseudo_share_dens[loss_mask])
+        L_io = F.mse_loss(pre_in_out_den[loss_mask], pseudo_in_out_dens[loss_mask])
+
+        loss_dict = {
+            'global': L_g,
+            'share': L_s,
+            'in_out': L_io,
+        }
+
+        loss = 0
+        for key in loss_dict.keys():
+            self.log(f'pseudo_{key}_loss', loss_dict[key], on_epoch=True, prog_bar=True, sync_dist=True)
+            loss += loss_dict[key]
 
         # L_c = F.mse_loss(output, data[batch_idx])
         # self.log(type + '_recon_loss', L_c, on_epoch=True, prog_bar=True, sync_dist=True)
 
-        return loss.mean()
+        return loss/3
 
 
 class ConvBlock(nn.Module):
