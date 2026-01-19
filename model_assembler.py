@@ -363,6 +363,6 @@ class ConvBlock(nn.Module):
 
 if __name__ == '__main__':
     model = VGGAE()
-    x = torch.randn(2, 3,512,512)
+    x = torch.randn(2, 3, 512, 512)
     output = model(x)
     print(output.size())
