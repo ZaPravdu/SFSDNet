@@ -4,7 +4,7 @@ import numpy as np
 from config import cfg
 
 from datasets.utils import get_testset
-from inference.engine import pseudo_error_inference
+from inference.engine import pseudo_error_inference, consistency_inference
 from model.utils import get_model
 
 
@@ -20,7 +20,6 @@ from model.utils import get_model
 #     np.save(save_path, data)
 
 
-
 class InferConfig():
     def __init__(self):
         self.data_mode = cfg.DATASET
@@ -32,6 +31,9 @@ class InferConfig():
         self.error_root = 'SDNet_error_map'
         self.scene_path = './test.txt'
         self.model_path = './sdnet.pth'
+        self.cfg = cfg
+        self.shuffle = False
+        # self.
 
 def main():
     infer_cfg = InferConfig()
@@ -41,7 +43,8 @@ def main():
 
     model = get_model(infer_cfg)
     # inference
-    pseudo_error_inference(test_loader, infer_cfg, model)
+    consistency_inference(test_loader, infer_cfg, model)
+    # pseudo_error_inference(test_loader, infer_cfg, model)
 
     # ae_path = 'weight/VIC/VGGAE/epoch=03-val_loss=0.7279.ckpt'
     # model = model_assembler.VGGAE.load_from_checkpoint(checkpoint_path=ae_path).cuda()

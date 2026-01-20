@@ -182,20 +182,20 @@ class Video_Counter(nn.Module):
 
         assert pre_global_den.size() == gt_global_den.size()
         global_mse_loss = self.criterion(pre_global_den, gt_global_den * self.cfg_data.DEN_FACTOR)
-        # pre_global_den = pre_global_den / self.cfg_data.DEN_FACTOR
+        pre_global_den = pre_global_den.detach() / self.cfg_data.DEN_FACTOR
         all_loss['global'] = global_mse_loss.item()
 
         gt_share_den = self.Gaussian(gt_share_dot_map)
         assert pre_share_den.size() == gt_share_den.size()
         share_mse_loss = self.criterion(pre_share_den, gt_share_den * self.cfg_data.DEN_FACTOR)
-        # pre_share_den = pre_share_den.detach() / self.cfg_data.DEN_FACTOR
+        pre_share_den = pre_share_den.detach() / self.cfg_data.DEN_FACTOR
         # all_loss['share'] = share_mse_loss * 10
         all_loss['share'] = share_mse_loss.item()
 
         gt_in_out_den = self.Gaussian(gt_in_out_dot_map)
         assert pre_in_out_den.size() == gt_in_out_den.size()
         in_out_mse_loss = self.criterion(pre_in_out_den, gt_in_out_den * self.cfg_data.DEN_FACTOR)
-        # pre_in_out_den = pre_in_out_den.detach() / self.cfg_data.DEN_FACTOR
+        pre_in_out_den = pre_in_out_den.detach() / self.cfg_data.DEN_FACTOR
         all_loss['in_out'] = in_out_mse_loss.item()
 
         return pre_global_den, gt_global_den, pre_share_den, gt_share_den, pre_in_out_den, gt_in_out_den, all_loss
