@@ -1,6 +1,7 @@
 import datasets
 from importlib import import_module
 from config import cfg
+from dataset_assembler import get_testset
 from model.VIC import Video_Counter
 import torch
 import datasets
@@ -46,41 +47,31 @@ def get_callbacks(monitor, monitor_mode, project_name, experiment_name, patience
 def main():
     # os.environ['WANDB_MODE'] = 'offline'
 
-    # project_name = 'VIC'
-    project_name='test'
+    project_name = 'VIC'
+    # project_name='test'
 
     freeze_backbone = True
 
     lr = 0.0001
     weight_decay = 1e-6
 
-    experiment_name = 'VGGAE-T-feature_merge-no_flip-train'
+    experiment_name = 'VGGAE-T-no_flip-train'
     epochs = 100
     batch_size = 64
     # weight_path = ''
-    # model = model_assembler.VGGAE(lr=lr, weight_decay=weight_decay,
-    #                                  freeze_backbone=freeze_backbone, max_epochs=epochs)
-    model = model_assembler.SFSDNet(max_epochs=epochs)
+    model = model_assembler.VGGAE(lr=lr, weight_decay=weight_decay,
+                                     freeze_backbone=freeze_backbone, max_epochs=epochs)
+    # model = model_assembler.SFSDNet(max_epochs=epochs, lr=lr, weight_decay=weight_decay, mask_type='mse')
 
     # DataLoader
+    # scenes, restore_transform = datasets.loading_testset(data_mode, 1, False, mode='test')
+    scene_path = './test.txt'
+    dataset_path = './MovingDroneCrowd'
+
     data_mode = cfg.DATASET
     datasetting = import_module(f'datasets.setting.{data_mode}')
     cfg_data = datasetting.cfg_data
-
-    val_frame_intervals = cfg_data.VAL_FRAME_INTERVALS
-    distributed = False
-    # scenes, restore_transform = datasets.loading_testset(data_mode, 1, False, mode='test')
-    train_loader, sampler_train, val_loader, restore_transform = \
-        datasets.loading_data(cfg.DATASET, val_frame_intervals, distributed, is_main_process())
-
-    val_dataset = []
-
-    for i, L in enumerate(val_loader):
-        val_dataset.append(L[1].dataset)
-
-    val_dataset = torch.utils.data.ConcatDataset(val_dataset)
-    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=1, shuffle=False, drop_last=False,
-                                             collate_fn=datasets.collate_fn)
+    train_loader = get_testset(dataset_path, scene_path, cfg_data, shuffle=True)
 
     if project_name == 'test':
         epochs = 1
@@ -89,9 +80,9 @@ def main():
         wandb_logger = None
         fast_dev_run = True
     else:
-        wandb.init(settings=wandb.Settings(_disable_stats=True), name=experiment_name, project=project_name, dir='./weight',
-                   mode='online')
-        wandb_logger = WandbLogger(name=experiment_name, project=project_name, save_dir='./weight', )
+        # wandb.init(settings=wandb.Settings(_disable_stats=True), name=experiment_name, project=project_name, dir='./weight',
+        #            mode='online')
+        wandb_logger = WandbLogger(name=experiment_name, project=project_name, save_dir='./weight', id='1')
         # wandb_logger = None
         fast_dev_run = False
 
@@ -111,7 +102,7 @@ def main():
 
     trainer.fit(
         model, train_loader, None,
-        # ckpt_path='weight/VIC/VGGAE-T-feature_merge-no_flip-train/VGGAE-T-feature_merge-no_flip-train-latest.ckpt'
+        ckpt_path='weight/VIC/VGGAE-T-no_flip-train/VGGAE-T-no_flip-train-latest.ckpt'
     )
 
 

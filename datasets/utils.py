@@ -8,20 +8,20 @@ import datasets
 from datasets.dataset import TestDataset
 
 
-def get_testset(dataset_path, scene_path, cfg_data):
+def get_testset(config):
 
-    main_transform = datasets.train_resize_transform(cfg_data.TRAIN_SIZE[0], cfg_data.TRAIN_SIZE[1], flip=False)
+    main_transform = datasets.train_resize_transform(config.cfg_data.TRAIN_SIZE[0], config.cfg_data.TRAIN_SIZE[1], flip=False)
     img_transform = standard_transforms.Compose([
         standard_transforms.ToTensor(),
-        standard_transforms.Normalize(*cfg_data.MEAN_STD)
+        standard_transforms.Normalize(*config.cfg_data.MEAN_STD)
     ])
     scene_names = []
-    with open(scene_path, 'r') as f:
+    with open(config.scene_path, 'r') as f:
         for line in f.readlines():
             scene_names.append(line.strip('\n'))
     last_scene_names = []
     for scene_name in scene_names:
-        root = os.path.join(dataset_path, 'frames', scene_name)
+        root = os.path.join(config.dataset_path, 'frames', scene_name)
         if '/' in scene_name:
             scene_name, clip_names = scene_name.split('/')
             clip_names = [clip_names]
@@ -36,15 +36,15 @@ def get_testset(dataset_path, scene_path, cfg_data):
     fullset = []
     for scene in scene_names:
         sub_dataset = TestDataset(scene_name=scene,
-                                  base_path=dataset_path,
+                                  base_path=config.dataset_path,
                                   main_transform=main_transform,
                                   img_transform=img_transform,
-                                  interval=cfg_data.VAL_FRAME_INTERVALS,
+                                  interval=config.cfg_data.VAL_FRAME_INTERVALS,
                                   skip_flag=False,
                                   target=True,
                                   datasetname='MovingDroneCrowd')
         fullset.append(sub_dataset)
     test_dataset = torch.utils.data.ConcatDataset(fullset)
-    test_loader = DataLoader(test_dataset, shuffle=False, batch_size=1, drop_last=False, num_workers=1,
-                             collate_fn=datasets.collate_fn)
+    test_loader = DataLoader(test_dataset, shuffle=config.shuffle, batch_size=1, drop_last=False, num_workers=1,
+                             collate_fn=datasets.collate_fn, persistent_workers=True)
     return test_loader

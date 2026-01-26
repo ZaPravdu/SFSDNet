@@ -650,7 +650,7 @@ def compute_metrics_all_scenes(scenes_pred_dict, scene_gt_dict, intervals):
             compute_metrics_single_scene(pre_dict, gt_dict, intervals)
         mae = np.abs(pre_crowdflow_cnt - gt_crowdflow_cnt)
         metrics['MAE'][i, :] = torch.tensor([pre_crowdflow_cnt, gt_crowdflow_cnt])
-        metrics['WRAE'][i,:] = torch.tensor([mae/(gt_crowdflow_cnt+1e-10), time])
+        metrics['WRAE'][i, :] = torch.tensor([mae/(gt_crowdflow_cnt+1e-10), time])
 
         metrics['MIAE'] =  torch.cat([metrics['MIAE'], torch.abs(inflow_cnt[:,0]-inflow_cnt[:,1])])
         metrics['MOAE'] = torch.cat([metrics['MOAE'], torch.abs(outflow_cnt[:, 0] - outflow_cnt[:, 1])])
