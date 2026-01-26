@@ -1,8 +1,11 @@
 import json
 import os
+from typing import List
 
 import numpy as np
+from numpy.typing import *
 import torch
+from torch.types import *
 from torch import nn
 from tqdm import tqdm
 import torchvision.transforms as T
@@ -145,5 +148,92 @@ def consistency_inference(data_loader, infer_cfg, model):
     # print('share:', share_loss.mean())
     # print('io:', io_loss.mean())
     # print('total:', total_loss.mean())
+
+class PseudoInference:
+    def __init__(self, data_loader, model, transforms: List, infer_cfg):
+        self.data_loader = data_loader
+        self.model = model.eval()
+        self.infer_cfg = infer_cfg
+        self.transforms = transforms
+
+    def consistency_regularization(self):
+        """
+        推理，默认从data loader到model的管线为tensor，后续管线为np array
+        职责：仅仅是控制workflow的流动。不应有任何其他的定义
+        """
+        with torch.no_grad():
+            for i, data in enumerate(tqdm(self.data_loader)):
+                # single forward
+                pseudo_dens = self.single_forward(self.model, data)
+                # uncertainty forward
+                multi_pseudo_dens = self.multi_forward_with_transforms(self.transforms, self.model, data)
+                # mask inference
+                pseudo_dens = self.cal_pseudo_mask(pseudo_dens, multi_pseudo_dens)
+                # save
+                path = self.get_save_path(data[1])
+                np.save(path, pseudo_dens)
+
+    def single_forward(self, model, data):
+        images, targets = data
+        pre_global_den, gt_global_den, pre_share_den, gt_share_den, pre_in_out_den, gt_in_out_den, _ = model(images.to(self.infer_cfg.device), targets)
+        pseudo_dens = [pre_global_den.detach().cpu(), pre_share_den.detach().cpu(), pre_in_out_den.detach().cpu()]
+        pseudo_dens = torch.concat(pseudo_dens, dim=1)
+        return pseudo_dens
+
+    def multi_forward_with_transforms(self, transforms, model, data) -> List[torch.Tensor]:
+        """
+        返回多次forward的结果
+        """
+        images, targets = data
+        forward_results = []
+        for transform in transforms:
+            augmented_images = transform(images)
+            pre_global_den, _, pre_share_den, _, pre_in_out_den, _, _ = model(augmented_images.to(self.infer_cfg.device),
+                                                                              targets)
+
+            if isinstance(transform, T.RandomHorizontalFlip):
+                pre_global_den = transform(pre_global_den)
+                pre_share_den = transform(pre_share_den)
+                pre_in_out_den = transform(pre_in_out_den)
+
+            pseudo_dens = [pre_global_den.detach().cpu(), pre_share_den.detach().cpu(), pre_in_out_den.detach().cpu()]
+            pseudo_dens = torch.concat(pseudo_dens, dim=1)
+            forward_results.append(pseudo_dens)
+
+        return forward_results
+    # def uncertainty_estimation(self, pseudo_dens):
+    #     """
+    #     负责推理不确定性
+    #     返回不确定性map
+    #     """
+    #     pass
+
+    def cal_pseudo_mask(self, pseudo_dens: torch.Tensor, multi_pseudo_dens: List[torch.Tensor]) -> NDArray:
+        """
+        接收多次forward的伪密度图，计算不确定性，并且根据不确定性计算mask，将mask拼接到原伪密度图上
+        """
+        multi_pseudo_dens.append(pseudo_dens)
+        uncertainty_map = self.uncertainty_estimation(multi_pseudo_dens)
+        mask = uncertainty_map < 0.5
+        return torch.concat([pseudo_dens, mask], dim=1).numpy()
+
+    def get_save_path(self, targets):
+        scene = targets[0]['scene_name']
+        frame_pair = str(targets[0]['frame']) + str(targets[1]['frame'])
+        return os.path.join(self.infer_cfg.pseudo_dens_root, scene, frame_pair + '.npy')
+
+    def uncertainty_estimation(self, multi_pseudo_dens: List[torch.Tensor]):
+        patch_size = multi_pseudo_dens[0].shape[2:]
+        patch_size = (patch_size[0] // self.infer_cfg.patch_layout[0], patch_size[1] // self.infer_cfg.patch_layout[1])
+        multi_pseudo_dens = [F.adaptive_avg_pool2d(pseudo_dens, output_size=self.infer_cfg.patch_layout)
+                             for pseudo_dens in multi_pseudo_dens] # 输出：[2, channel, patches, patches]
+        multi_pseudo_dens = torch.stack(multi_pseudo_dens)
+
+        uncertainty_patch = multi_pseudo_dens.std(dim=0) # 输出：[2, channel, patches, patches]
+        uncertainty_map = torch.kron(uncertainty_patch, torch.ones(patch_size))
+        return uncertainty_map
+
+
+
 
 

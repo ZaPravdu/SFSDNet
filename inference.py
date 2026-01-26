@@ -2,9 +2,10 @@ import os
 from importlib import import_module
 import numpy as np
 from config import cfg
+import torchvision.transforms as T
 
 from datasets.utils import get_testset
-from inference.engine import pseudo_error_inference, consistency_inference
+from inference.engine import pseudo_error_inference, consistency_inference, PseudoInference
 from model.utils import get_model
 
 
@@ -33,6 +34,7 @@ class InferConfig():
         self.model_path = './sdnet.pth'
         self.cfg = cfg
         self.shuffle = False
+        self.patch_layout = (8, 8)
         # self.
 
 def main():
@@ -40,10 +42,16 @@ def main():
 
     # load data
     test_loader = get_testset(infer_cfg)
-
+    # model
     model = get_model(infer_cfg)
-    # inference
-    consistency_inference(test_loader, infer_cfg, model)
+    transforms = [T.GaussianBlur(3, 0.1),
+                  T.RandomHorizontalFlip(1),
+                  T.ColorJitter(0.2, 0.2, 0.2)]
+    # inference engine
+    infer = PseudoInference(test_loader, model, transforms, infer_cfg)
+    infer.consistency_regularization()
+
+    # consistency_inference(test_loader, infer_cfg, model)
     # pseudo_error_inference(test_loader, infer_cfg, model)
 
     # ae_path = 'weight/VIC/VGGAE/epoch=03-val_loss=0.7279.ckpt'
