@@ -87,40 +87,7 @@ def main():
             np.save(os.path.join(mae_error_main_path, file_name), recon_mae)
             np.save(os.path.join(mse_error_main_path, file_name), recon_mse)
 
-            # for j, target in enumerate(targets, 0):
-            #     scene = target['scene_name']
-            #     frame = target['frame']
-            #
-            #     save_npy(recon_mae[j].mean(axis=0, keepdims=True), 'VGGAE_error_map', scene, 'recon', frame, 'mae')
-            #     save_npy(recon_mse[j].mean(axis=0, keepdims=True), 'VGGAE_error_map', scene, 'recon', frame, 'mse')
-
-    # ae_path = 'weight/VIC/VGGAE/epoch=03-val_loss=0.7279.ckpt'
-    # model = model_assembler.VGGAE.load_from_checkpoint(checkpoint_path=ae_path).cuda()
-    # model.eval()
-
-
 if __name__ == '__main__':
     main()
-# for scene in scenes:
-#     test_loader = scene[1]
-#     for i, data in enumerate(tqdm(test_loader)):
-#         images, targets = data
-#         images = images.cuda()
-#         recon = model(images)
-#
-#         recon_mae = calculate_mae(recon, images)
-#         recon_mse = calculate_mse(recon, images)
-#
-#         for i, target in enumerate(targets, 0):
-#             sample_errors[scene[0]][target['frame']]['recon_mae'] = recon_mae[i].detach().cpu().numpy()
-#             sample_errors[scene[0]][target['frame']]['recon_mse'] = recon_mse[i].detach().cpu().numpy()
 
-
-
-
-# calculate metrics for density map
-
-# calculate metrics for reconstruction
-
-# calculate correlation factor
 
