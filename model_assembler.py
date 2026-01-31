@@ -241,33 +241,26 @@ class VGGAE(HyperModel):
 
 
 class SFSDNet(HyperModel):
-    def __init__(self, lr=0.0001, weight_decay=1e-6,
-                 weight_path='./sdnet.pth',
-                 freeze_backbone=True, max_epochs=10, mask_type='mse'):
+    def __init__(self, train_cfg, mask_type='mse'):
         super().__init__()
         # self.orthogonal_loss = orthogonal_loss
-        self.freeze_backbone = freeze_backbone
-        self.lr = lr
-        self.weight_decay = weight_decay
-        self.max_epochs = max_epochs
+        self.train_cfg = train_cfg
+        self.freeze_backbone = train_cfg.freeze_backbone
+        self.lr = train_cfg.lr
+        self.weight_decay = train_cfg.weight_decay
+        self.max_epochs = train_cfg.max_epochs
         self.mask_type = mask_type
 
-        data_mode = cfg.DATASET
-        datasetting = import_module(f'datasets.setting.{data_mode}')
-        cfg_data = datasetting.cfg_data
+        self.model = Video_Counter(cfg, train_cfg.cfg_data)
 
-        self.model = Video_Counter(cfg, cfg_data)
-        if weight_path is not None:
-            state = torch.load(weight_path)
+        if train_cfg.weight_path is not None:
+            state = torch.load(train_cfg.weight_path)
             new_state = {}
             for k, v in state.items():
                 name = k[7:] if k.startswith('module.') else k
                 new_state[name] = v
             self.model.load_state_dict(new_state,
                                        strict=True)
-
-
-
 
         # if self.freeze_backbone:
 
@@ -288,8 +281,16 @@ class SFSDNet(HyperModel):
         images, targets = data
 
         # assert data.shape == (2, 3, 768, 1024), f'data.shape: {data.shape}'
-        pre_global_den, gt_global_den, pre_share_den, gt_share_den, pre_in_out_den, gt_in_out_den, gt_loss = self.forward(images, targets)
+        pre_global_den, gt_global_den, pre_share_den, gt_share_den, pre_in_out_den, gt_in_out_den = self.forward(images, targets)
         # loss_mask = self.create_patch_mask()
+
+        gt_loss = {}
+        global_mse_loss = self.criterion(pre_global_den, gt_global_den * self.train_cfg.cfg_data.DEN_FACTOR)
+        gt_loss['global'] = global_mse_loss.item()
+        share_mse_loss = self.criterion(pre_share_den, gt_share_den * self.cfg_data.DEN_FACTOR)
+        gt_loss['share'] = share_mse_loss * 10
+        in_out_mse_loss = self.criterion(pre_in_out_den, gt_in_out_den * self.cfg_data.DEN_FACTOR)
+        gt_loss['in_out'] = in_out_mse_loss.item()
 
         for key in gt_loss:
             self.log(f'gt_{key}_loss', gt_loss[key], on_epoch=True, prog_bar=True, sync_dist=True)
@@ -298,45 +299,52 @@ class SFSDNet(HyperModel):
 
         assert targets[0]['scene_name'] == targets[1]['scene_name']
 
-        scene, sub_scene = targets[0]['scene_name'].split('/')
-        frame_pair = str(targets[0]['frame']) + str(targets[1]['frame'])
-        file_name = f'{frame_pair}.npy'
-        pseudo_dens_main_path = os.path.join('pseudo_density_map', scene, sub_scene, 'density_map')
-        pseudo_dens_path = os.path.join(pseudo_dens_main_path, file_name)
-        pseudo_dens_map = np.load(pseudo_dens_path)
+        pseudo_global_dens, pseudo_in_out_dens, pseudo_share_dens, global_mask, share_mask, in_out_mask = self.get_pseudo_dens(targets)
 
-        pseudo_global_dens, pseudo_share_dens, pseudo_in_out_dens = torch.Tensor(pseudo_dens_map, device=self.device)
-
-        # pseudo_dens_map = torch.Tensor(np.stack(pseudo_dens_map)*200)
-        # pseudo_dens_map = pseudo_dens_map.to(self.device)
-        # pseudo_dens_map.requires_grad = False
 
         # general_pre = torch.cat([pre_global_den, pre_share_den, pre_in_out_den], dim=1)
-        if self.mask_type is not None:
-            mask_main_path = os.path.join('pseudo_density_map', scene, sub_scene, f'{self.mask_type}_mask')
-            loss_mask = torch.tensor(np.load(mask_main_path, file_name), device=self.device)
-        else:
-            loss_mask = torch.ones_like(pre_share_den, device=self.device, dtype=torch.bool)
-        L_g = F.mse_loss(pre_global_den[loss_mask], pseudo_global_dens[loss_mask])
-        L_s = F.mse_loss(pre_share_den[loss_mask], pseudo_share_dens[loss_mask])
-        L_io = F.mse_loss(pre_in_out_den[loss_mask], pseudo_in_out_dens[loss_mask])
+        # if self.mask_type is not None:
+        #     mask_main_path = os.path.join('pseudo_density_map', scene, sub_scene, f'{self.mask_type}_mask')
+        #     loss_mask = torch.tensor(np.load(mask_main_path, file_name), device=self.device)
+        # else:
+        #     loss_mask = torch.ones_like(pre_share_den, device=self.device, dtype=torch.bool)
+        L_g = F.mse_loss(pre_global_den[global_mask], pseudo_global_dens[global_mask])
+        L_s = F.mse_loss(pre_share_den[share_mask], pseudo_share_dens[share_mask])
+        L_io = F.mse_loss(pre_in_out_den[in_out_mask], pseudo_in_out_dens[in_out_mask])
 
         loss_dict = {
             'global': L_g,
             'share': L_s,
             'in_out': L_io,
         }
-
         loss = 0
         for key in loss_dict.keys():
-            self.log(f'pseudo_{key}_loss', loss_dict[key], on_epoch=True, prog_bar=True, sync_dist=True)
+            self.log(f'pseudo_{key}_loss', loss_dict[key].item(), on_epoch=True, prog_bar=True, sync_dist=True)
             loss += loss_dict[key]
-
         # L_c = F.mse_loss(output, data[batch_idx])
         # self.log(type + '_recon_loss', L_c, on_epoch=True, prog_bar=True, sync_dist=True)
-
         return loss/3
 
+    def get_pseudo_dens(self, targets):
+        scene_name = targets[0]['scene_name']
+
+        pseudo_dens_path = self.get_pseudo_dens_path(scene_name, targets)
+        pseudo_dens_map = np.load(pseudo_dens_path)
+
+        assert pseudo_dens_map.shape(0) == 6
+
+        pseudo_global_dens, pseudo_share_dens, pseudo_in_out_dens, global_mask, share_mask, in_out_mask = torch.Tensor(
+            pseudo_dens_map, device=self.device)
+        return pseudo_global_dens, pseudo_in_out_dens, pseudo_share_dens, global_mask, share_mask, in_out_mask
+
+    def get_pseudo_dens_path(self, scene_name, targets):
+        frame_pair = str(targets[0]['frame']) + str(targets[1]['frame'])
+        file_name = f'{frame_pair}.npy'
+        pseudo_dens_main_path = os.path.join('pseudo_density_map', scene_name)
+        pseudo_dens_path = os.path.join(pseudo_dens_main_path, file_name)
+        return pseudo_dens_path
+
+    # def calculate_gt_loss(self, data):
 
 class ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels):

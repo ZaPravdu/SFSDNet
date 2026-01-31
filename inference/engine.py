@@ -2,8 +2,9 @@ import json
 import os
 from typing import List
 
+import numpy
 import numpy as np
-from numpy.typing import *
+# from numpy.typing import *
 import torch
 from torch.types import *
 from torch import nn
@@ -201,14 +202,8 @@ class PseudoInference:
             forward_results.append(pseudo_dens)
 
         return forward_results
-    # def uncertainty_estimation(self, pseudo_dens):
-    #     """
-    #     负责推理不确定性
-    #     返回不确定性map
-    #     """
-    #     pass
 
-    def cal_pseudo_mask(self, pseudo_dens: torch.Tensor, multi_pseudo_dens: List[torch.Tensor]) -> NDArray:
+    def cal_pseudo_mask(self, pseudo_dens: torch.Tensor, multi_pseudo_dens: List[torch.Tensor]) -> np.ndarray:
         """
         接收多次forward的伪密度图，计算不确定性，并且根据不确定性计算mask，将mask拼接到原伪密度图上
         """
