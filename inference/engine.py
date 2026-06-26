@@ -172,13 +172,15 @@ class PseudoInference:
                 pseudo_dens = self.cal_pseudo_mask(pseudo_dens, multi_pseudo_dens)
                 # save
                 path = self.get_save_path(data[1])
+                if not os.path.exists(os.path.dirname(path)):
+                    os.makedirs(os.path.dirname(path))
                 np.save(path, pseudo_dens)
 
     def single_forward(self, model, data):
         images, targets = data
         pre_global_den, gt_global_den, pre_share_den, gt_share_den, pre_in_out_den, gt_in_out_den, _ = model(images.to(self.infer_cfg.device), targets)
         pseudo_dens = [pre_global_den.detach().cpu(), pre_share_den.detach().cpu(), pre_in_out_den.detach().cpu()]
-        pseudo_dens = torch.concat(pseudo_dens, dim=1)
+        pseudo_dens = torch.cat(pseudo_dens, dim=1)
         return pseudo_dens
 
     def multi_forward_with_transforms(self, transforms, model, data) -> List[torch.Tensor]:
@@ -198,7 +200,7 @@ class PseudoInference:
                 pre_in_out_den = transform(pre_in_out_den)
 
             pseudo_dens = [pre_global_den.detach().cpu(), pre_share_den.detach().cpu(), pre_in_out_den.detach().cpu()]
-            pseudo_dens = torch.concat(pseudo_dens, dim=1)
+            pseudo_dens = torch.cat(pseudo_dens, dim=1)
             forward_results.append(pseudo_dens)
 
         return forward_results
@@ -210,7 +212,7 @@ class PseudoInference:
         multi_pseudo_dens.append(pseudo_dens)
         uncertainty_map = self.uncertainty_estimation(multi_pseudo_dens)
         mask = uncertainty_map < 0.5
-        return torch.concat([pseudo_dens, mask], dim=1).numpy()
+        return np.concatenate([pseudo_dens, mask], axis=1)
 
     def get_save_path(self, targets):
         scene = targets[0]['scene_name']
@@ -224,8 +226,8 @@ class PseudoInference:
                              for pseudo_dens in multi_pseudo_dens] # 输出：[2, channel, patches, patches]
         multi_pseudo_dens = torch.stack(multi_pseudo_dens)
 
-        uncertainty_patch = multi_pseudo_dens.std(dim=0) # 输出：[2, channel, patches, patches]
-        uncertainty_map = torch.kron(uncertainty_patch, torch.ones(patch_size))
+        uncertainty_patch = multi_pseudo_dens.std(dim=0).numpy() # 输出：[2, channel, patches, patches]
+        uncertainty_map = np.kron(uncertainty_patch, np.ones(patch_size))
         return uncertainty_map
 
 

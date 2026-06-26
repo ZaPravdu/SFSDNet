@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import torch.nn as nn
+import torch.utils.checkpoint as checkpoint
 from functools import partial
 from .gvt import pcvit_base, PosCNN
 from model.points_from_den import *
@@ -83,7 +84,7 @@ class Video_Counter(nn.Module):
         elif cfg.encoder == 'ResNet_50_FPN':
             self.Extractor = ResNet_50_FPN_Encoder()
         else:
-            raise  Exception("The backbone is out of setting, Please chose HR_Net or VGG16_FPN")
+            raise Exception("The backbone is out of setting, Please chose HR_Net or VGG16_FPN")
 
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
         # self.cross_pos_block = PosCNN(self.cfg.FEATURE_DIM, self.cfg.FEATURE_DIM)
@@ -104,8 +105,8 @@ class Video_Counter(nn.Module):
     def forward(self, img, target):
         features = self.Extractor(img)
         B, C, H, W = features[-1].shape
-        self.feature_scale = H / img.shape[2] 
-        pre_global_den = self.global_decoder(features[-1])
+        self.feature_scale = H / img.shape[2]
+        pre_global_den = checkpoint.checkpoint(self.global_decoder, features[-1])
         all_loss = {}
         gt_in_out_dot_map = torch.zeros_like(pre_global_den)
         gt_share_dot_map = torch.zeros_like(pre_global_den)
@@ -115,7 +116,7 @@ class Video_Counter(nn.Module):
         for l_num in range(len(self.share_cross_attention)):
             share_results = []
             if share_features is not None:
-                feature_fused = self.feature_fuse(share_features, features[l_num])
+                feature_fused = checkpoint.checkpoint(self.feature_fuse, share_features, features[l_num])
 
             for pair_idx in range(img_pair_num):
                 if share_features is not None:
@@ -169,9 +170,9 @@ class Video_Counter(nn.Module):
             gt_in_out_dot_map[pair_idx * 2, 0, outflow_coords[:, 1], outflow_coords[:, 0]] = 1
             gt_in_out_dot_map[pair_idx * 2 + 1, 0, inflow_coords[:, 1], inflow_coords[:, 0]] = 1
 
-        pre_share_den = self.share_decoder(share_features)
+        pre_share_den = checkpoint.checkpoint(self.share_decoder, share_features)
         mid_pre_in_out_den = pre_global_den - pre_share_den
-        pre_in_out_den = self.in_out_decoder(mid_pre_in_out_den)
+        pre_in_out_den = checkpoint.checkpoint(self.in_out_decoder, mid_pre_in_out_den)
 
         # ===================== density map loss =============================
         gt_global_dot_map = torch.zeros_like(pre_global_den)
@@ -181,21 +182,21 @@ class Video_Counter(nn.Module):
         gt_global_den = self.Gaussian(gt_global_dot_map)
 
         assert pre_global_den.size() == gt_global_den.size()
-        pre_global_den = pre_global_den.detach() / self.cfg_data.DEN_FACTOR
+        pre_global_den = pre_global_den / self.cfg_data.DEN_FACTOR
         # global_mse_loss = self.criterion(pre_global_den, gt_global_den * self.cfg_data.DEN_FACTOR)
 
         # all_loss['global'] = global_mse_loss.item()
 
         gt_share_den = self.Gaussian(gt_share_dot_map)
         assert pre_share_den.size() == gt_share_den.size()
-        pre_share_den = pre_share_den.detach() / self.cfg_data.DEN_FACTOR
+        pre_share_den = pre_share_den/ self.cfg_data.DEN_FACTOR
         # share_mse_loss = self.criterion(pre_share_den, gt_share_den * self.cfg_data.DEN_FACTOR)
         # all_loss['share'] = share_mse_loss * 10
         # all_loss['share'] = share_mse_loss.item()
 
         gt_in_out_den = self.Gaussian(gt_in_out_dot_map)
         assert pre_in_out_den.size() == gt_in_out_den.size()
-        pre_in_out_den = pre_in_out_den.detach() / self.cfg_data.DEN_FACTOR
+        pre_in_out_den = pre_in_out_den / self.cfg_data.DEN_FACTOR
         # in_out_mse_loss = self.criterion(pre_in_out_den, gt_in_out_den * self.cfg_data.DEN_FACTOR)
         # all_loss['in_out'] = in_out_mse_loss.item()
 
@@ -254,29 +255,6 @@ class Video_Counter(nn.Module):
 
         return pre_global_den, pre_share_den, pre_in_out_den
     
-    
-    # def con_loss(self, labels, features, pair_idx, share_mask0):
-    #     count_in_pair=[labels[pair_idx * 2]['points'].size(0), labels[pair_idx * 2+1]['points'].size(0)]
-    #     if (np.array(count_in_pair) > 0).all() and torch.sum(share_mask0) > 2:
-    #         match_gt, pois = self.get_ROI_and_MatchInfo(labels[pair_idx * 2], labels[pair_idx * 2 + 1], noise='ab')
-    #         poi_features = prroi_pool2d(features[pair_idx*2: pair_idx*2+2], pois, 1, 1, self.feature_scale)
-    #         poi_features = poi_features.squeeze(2).squeeze(2)[None].transpose(1,2) # [batch, dim, num_features]
-    #         mdesc0, mdesc1 = torch.split(poi_features, count_in_pair,dim=2)
-    #         sim_matrix = torch.einsum('bdn,bdm->bnm', mdesc0, mdesc1)  #inner product (n,m)
-    #         # mdesc0(n,256) mdesc1(m,256) frame1 n peoples frames 2 m peoples
-    #         m0 = torch.norm(mdesc0,dim = 1) #l2norm
-    #         m1 = torch.norm(mdesc1,dim = 1)
-    #         norm = torch.einsum('bn,bm->bnm',m0,m1) + 1e-7 # (n,m)
-    #         exp_term = torch.exp(sim_matrix / (256 ** .5 )/ norm)[0]
-    #         try:
-    #             topk = torch.topk(exp_term[match_gt['a2b'][:,0]],50,dim = 1).values #(c,b) # # of negative 
-    #         except:
-    #             topk = exp_term[match_gt['a2b'][:,0]]
-    #         denominator = torch.sum(topk,dim=1)   # denominator
-    #         numerator = exp_term[match_gt['a2b'][:,0], match_gt['a2b'][:,1]]   # numerator 
-    #         loss =  torch.sum(-torch.log(numerator / denominator +1e-7))
-    #         return loss.sum()
-    #     else:
-    #         return torch.tensor(0., device=features[0].device)
+    def initialize_gates(self):
+        self.Extractor.initialize_gates()
 
-    

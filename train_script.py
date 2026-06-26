@@ -1,3 +1,4 @@
+import sys
 import datasets
 from importlib import import_module
 from config import cfg
@@ -21,36 +22,34 @@ import glob
 
 class TrainConfig():
     def __init__(self):
-        self.project_name = 'VIC'
+        self.project_name = 'SFSDNet'
         # project_name='test'
-        self.experiment_name = 'VGGAE-T-no_flip-train'
+        self.experiment_name = 'SFSDNet-no_filter-freeze_head'
+        self.max_epochs=10
         self.resume = False
         if self.resume:
-            self.ckpt_path = f'weight/VIC/{self.experiment_name}/{self.experiment_name}-latest.ckpt'
+            self.ckpt_path = f'/home/mscs/houminqiu2/SFSDNet/weight/VIC/{self.experiment_name}/{self.experiment_name}-latest.ckpt'
         else:
             self.ckpt_path = None
 
         self.data_mode = cfg.DATASET
-        self.datasetting = import_module(f'datasets.setting.{self.data_mode}')
-        self.cfg_data = self.datasetting.cfg_data
         self.device = 'cuda'
-        self.dataset_path = 'MovingDroneCrowd'
-        self.pseudo_dens_root = 'pseudo_density_map'
+        self.dataset_path = '/home/mscs/houminqiu2/SFSDNet/MovingDroneCrowd'
+        self.pseudo_dens_root = '/public/houminqiu2/pseudo_density_map'
         # self.error_root = 'SDNet_error_map'
-        self.scene_path = './test.txt'
-        self.model_path = './sdnet.pth'
+        self.scene_path = '/home/mscs/houminqiu2/SFSDNet/MovingDroneCrowd/test.txt'
+        self.model_path = '/home/mscs/houminqiu2/SFSDNet/sdnet.pth'
         self.cfg = cfg
         self.shuffle = False
-        self.epochs = 100
+
         self.batch_size = 64
         self.lr = 0.0001
         self.weight_decay = 1e-6
         self.shuffle=True
-        self.freeze_backbone = True
-        self.weight_path ='./sdnet.pth'
+        self.freeze_backbone = False
+        self.freeze_head = True
+        self.weight_path ='/home/mscs/houminqiu2/SFSDNet/sdnet.pth'
         # self.patch_layout = (8, 8)
-
-torch.set_float32_matmul_precision('medium')
 
 def get_callbacks(monitor, monitor_mode, project_name, experiment_name, patience=3):
     checkpoint_callback = ModelCheckpoint(
@@ -73,22 +72,29 @@ def get_callbacks(monitor, monitor_mode, project_name, experiment_name, patience
         checkpoint_callback_latest
     ]
     return callbacks
-
+# os.chdir('/home/mscs/houminqiu2/SFSDNet/')
 
 def main():
     # os.environ['WANDB_MODE'] = 'offline'
 
     # config
+    
     train_cfg = TrainConfig()
+
+    # DataLoader
+    # cfg_data独立于TrainConfig
+    datasetting = import_module(f'datasets.setting.{train_cfg.data_mode}')
+    cfg_data = datasetting.cfg_data
 
     # model
     # model = model_assembler.VGGAE(lr=lr, weight_decay=weight_decay,
     #                                  freeze_backbone=freeze_backbone, max_epochs=epochs)
-    model = model_assembler.SFSDNet(train_cfg, mask_type='mse')
+    model = model_assembler.SFSDNet(cfg_data=cfg_data, **train_cfg.__dict__, mask_type='mse')
 
     # DataLoader
     # scenes, restore_transform = datasets.loading_testset(data_mode, 1, False, mode='test')
-    train_loader = get_testset(train_cfg)
+    from datasets.dataset import TestDataset
+    train_loader = get_testset(train_cfg, TestDataset, cfg_data)
 
     # Logger
     fast_dev_run, wandb_logger = get_logger(train_cfg)
@@ -99,10 +105,10 @@ def main():
 
     trainer = Trainer(
         callbacks=callbacks,
-        max_epochs=train_cfg.epochs, accelerator='gpu',
+        max_epochs=train_cfg.max_epochs, accelerator='gpu', gpus=1,
         logger=wandb_logger, default_root_dir=f'./weight/{train_cfg.project_name}',
         log_every_n_steps=1,
-        precision='bf16-mixed',
+        precision=16,
         fast_dev_run=fast_dev_run,
         num_sanity_val_steps=0
         # accumulate_grad_batches=4,
@@ -110,7 +116,7 @@ def main():
 
     trainer.fit(
         model, train_loader, None,
-        ckpt_path= train_cfg.ckpt_path
+        # ckpt_path= train_cfg.ckpt_path
     )
 
 
@@ -124,8 +130,7 @@ def get_logger(train_cfg):
     else:
         # wandb.init(settings=wandb.Settings(_disable_stats=True), name=experiment_name, project=project_name, dir='./weight',
         #            mode='online')
-        wandb_logger = WandbLogger(name=train_cfg.experiment_name, project=train_cfg.project_name, save_dir='./weight',
-                                   id='1')
+        wandb_logger = WandbLogger(name=train_cfg.experiment_name, project=train_cfg.project_name, save_dir='/home/mscs/houminqiu2/SFSDNet/weight', offline=True, settings=wandb.Settings(_disable_stats=True))
         # wandb_logger = None
         fast_dev_run = False
     return fast_dev_run, wandb_logger

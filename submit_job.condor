@@ -1,0 +1,31 @@
+# train.sub
+# HTCondor 提交脚本
+
+# 基本配置
+executable = /home/mscs/houminqiu2/SFSDNet/train_script.sh
+
+initialdir = /home/mscs/houminqiu2/SFSDNet/
+
+# 输入输出文件
+log        = training.log
+error      = training.err
+output     = training.out
+
+# 资源请求
+request_gpus = 1
+request_cpus = 4
+request_memory = 32GB
+# request_disk = 10GB
+
+# 环境设置
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+
+# 传输文件（如果需要）
+# transfer_input_files = model.py,data/
+# transfer_output_files = checkpoints/,results/
+
+# 参数传递
+
+# 提交作业
+queue

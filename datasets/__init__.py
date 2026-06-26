@@ -163,26 +163,22 @@ class train_transform(object):
         return img, target
     
 def collate_fn(batch):
-    batch = list(filter(lambda x: x is not None, batch))
+    batch = [x for x in batch if x is not None]
     data = list(zip(*batch))
-    img_tensors = []
-    labels = []
-    for i in range(len(data[0])):
-        try:
-            img_tensors.append(torch.stack(data[0][i], dim=0))
-        except:
-            pass
-
-        try:
-            labels += data[1][i]
-        except:
-            pass
-
-    try:
-        img_tensors = torch.cat(img_tensors, dim=0)
-    except:
-        pass
+    # stack each frame pair then cat all pairs along batch dim
+    img_tensors = torch.cat([torch.stack(data[0][i], dim=0) for i in range(len(data[0]))], dim=0)
+    labels = [item for i in range(len(data[1])) for item in data[1][i]]
     return img_tensors, labels
+
+def p2r_collate_fn(batch):
+    batch = [x for x in batch if x is not None]
+    data = list(zip(*batch))
+    weak_imgs = torch.cat([torch.stack(data[0][i], dim=0) for i in range(len(data[0]))], dim=0)
+    strong_imgs = torch.cat([torch.stack(data[1][i], dim=0) for i in range(len(data[1]))], dim=0)
+    # data[2] is None when target=False (unlabeled);
+    # otherwise it is a tuple of [target1, target2] pairs
+    labels = [item for i in range(len(data[2])) for item in data[2][i]] if data[2] and data[2][0] is not None else []
+    return weak_imgs, strong_imgs, labels
 
 
 def createTrainData(datasetname, Dataset, cfg_data, distributed, disable_strong_aug=True):

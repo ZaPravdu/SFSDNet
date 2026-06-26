@@ -4,6 +4,7 @@ from .conv import ResBlock
 from model.necks import FPN
 from  torchvision import models
 import torch.nn.functional as F
+from torch.utils import checkpoint
 
 BatchNorm2d = nn.BatchNorm2d
 BN_MOMENTUM = 0.01
@@ -12,7 +13,7 @@ class VGG16_FPN_Encoder(nn.Module):
     def __init__(self, pretrained=True):
         super(VGG16_FPN_Encoder, self).__init__()
 
-        vgg = models.vgg16_bn(weights=models.VGG16_BN_Weights.IMAGENET1K_V1)
+        vgg = models.vgg16_bn(pretrained=True)
         features = list(vgg.features.children())
 
         self.layer1 = nn.Sequential(*features[0:23])
@@ -37,7 +38,8 @@ class VGG16_FPN_Encoder(nn.Module):
         f_list.append(x1)
         x2 = self.layer2(x1)
         f_list.append(x2)
-        x3 = self.layer3(x2)
+        x3 = checkpoint.checkpoint(self.layer3, x2)
+        # x3 = self.layer3(x2)
         f_list.append(x3)
 
         fpn_f_list = self.neck2f(f_list)
@@ -49,3 +51,5 @@ class VGG16_FPN_Encoder(nn.Module):
         feature = self.feature_head(multi_scale_f)
         outputs.append(feature)
         return outputs
+    
+    
