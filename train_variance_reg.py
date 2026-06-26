@@ -91,8 +91,7 @@ class TrainConfig:
         self.beta = 1
         self.use_attention_gate = True
         self.training_mode = 'p2r'
-        self.use_delta_L = True        # will be disabled by use_variance_reg
-        self.use_original_delta = True
+        self.delta_L_mode = None    # variance reg uses external coeff, not delta-L
         self.use_variance_reg = True   # enables variance-based reg_coeff
 
         self.gt_ratios_per_scene = 0.1

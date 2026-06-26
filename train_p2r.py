@@ -39,7 +39,7 @@ class TrainConfig():
 
 
         # self.group = self.experiment_name
-        self.validate_mode = False
+        self.validate_mode = True
         self.resume = False
         if self.resume:
             self.ckpt_path = f'/home/mscs/houminqiu2/SFSDNet/weight/VIC/{self.experiment_name}/{self.experiment_name}-latest.ckpt'
@@ -78,13 +78,13 @@ class TrainConfig():
         self.ST = False
         self.partial=1
         self.reg_mode = 'l2'
-        self.beta = 100
+        self.beta = 1
         self.use_attention_gate = True
         self.training_mode = 'p2r'
-        self.use_delta_L = True
-        self.use_original_delta = 'exp' # 'exp', False
+        self.delta_L_mode = 'exp'  # None=disabled, 'original', 'inv', 'exp'
 
         self.gt_ratios_per_scene = 0.3  # 0 表示不使用 GT 半监督模式；作用到每场景，向下取整至少1
+        self.single_scene = None  # None=use all scenes, '25'=only scene 25
         self.pseudo = True
         # self.gate_freeze_json = 'low_importance_gates.json'
 
@@ -93,17 +93,11 @@ class TrainConfig():
         self.project_name = 'SFSDNet'
         # self.project_name='test'
         postfix = '-attn_gate' if self.use_attention_gate else ''
-        self.experiment_name = f'{self.data_mode}-{self.reg_mode}-gt{self.gt_ratios_per_scene}'+postfix
-        if self.use_delta_L:
-            if self.use_original_delta == 'exp':
-                suffix = '-exp_deltaL'
-            elif self.use_original_delta:
-                suffix = '-orig_deltaL'
-            else:
-                suffix = '-inv_deltaL'
-            self.experiment_name += f'{suffix}{self.beta}'
+        self.experiment_name = f'{self.data_mode}-{self.reg_mode}-gt{self.gt_ratios_per_scene}-{self.single_scene if self.single_scene is not None else "all"}'+postfix
+        if self.delta_L_mode is not None:
+            self.experiment_name += f'-{self.delta_L_mode}_deltaL{self.beta}'
         if self.validate_mode:
-            self.experiment_name = f'{self.data_mode}-SDNet'
+            self.experiment_name = f'{self.data_mode}-SDNet-{self.single_scene if self.single_scene is not None else "all"}'
         # self.experiment_name = f'{self.data_mode}-source'
         
 

@@ -34,8 +34,7 @@ class P2RModel(HyperModel):
         self.use_attention_gate = kwargs.get('use_attention_gate', False)
         self.batch_size = kwargs.get('batch_size', 8)
         self.gate_freeze_json = kwargs.get('gate_freeze_json', None)
-        self.use_delta_L = kwargs.get('use_delta_L', False)
-        self.use_original_delta = kwargs.get('use_original_delta', True)
+        self.delta_L_mode = kwargs.get('delta_L_mode', None)  # None, 'original', 'inv', 'exp'
         self.use_variance_reg = kwargs.get('use_variance_reg', False)
         self.train_loader = kwargs.get('train_loader', None)
         self.gt_ratios_per_scene = kwargs.get('gt_ratios_per_scene', 0)
@@ -265,28 +264,28 @@ class P2RModel(HyperModel):
     # ── Delta-L dynamic regularization ────────────────────────────
 
     def on_train_epoch_start(self):
-        if self.use_delta_L:
+        if self.delta_L_mode is not None:
             self._compute_delta_L()
         self._assert_default_reg_coeff()
         self._validate_gt_sampling()
 
     def _assert_default_reg_coeff(self):
-        """When use_delta_L is False, all reg_coeff must be 1.0."""
-        if self.use_delta_L:
+        """When delta_L_mode is None, all reg_coeff must be 1.0."""
+        if self.delta_L_mode is not None:
             return
         for mod in self.student.modules():
             if not isinstance(mod, BaseGatedModule):
                 continue
             if hasattr(mod, 'reg_coeff'):
                 assert all(c == 1.0 for c in mod.reg_coeff), (
-                    f"GatedConv reg_coeff must be 1.0 when use_delta_L=False, "
+                    f"GatedConv reg_coeff must be 1.0 when delta_L_mode is None, "
                     f"got {mod.reg_coeff}"
                 )
             for attr in ('q_reg_coeff', 'k_reg_coeff', 'v_reg_coeff'):
                 if hasattr(mod, attr):
                     coeff = getattr(mod, attr)
                     assert all(c == 1.0 for c in coeff), (
-                        f"{attr} must be 1.0 when use_delta_L=False, "
+                        f"{attr} must be 1.0 when delta_L_mode is None, "
                         f"got {coeff}"
                     )
 
@@ -373,7 +372,7 @@ class P2RModel(HyperModel):
         # GatedConv: per-channel coeffs
         for name in list(fisher.keys()):
             if name.endswith('.gate'):
-                coeff = delta_L(grad_mean[name], fisher[name], self.use_original_delta).tolist()
+                coeff = delta_L(grad_mean[name], fisher[name], self.delta_L_mode).tolist()
                 parent_path = name.rsplit('.', 1)[0]
                 nm[parent_path].set_reg_coeff(coeff)
 
@@ -383,7 +382,7 @@ class P2RModel(HyperModel):
             if name.endswith('_gate_logit'):
                 parent_path = name.rsplit('.', 1)[0]
                 gate_type = name.rsplit('.', 1)[1]
-                c = delta_L(grad_mean[name], fisher[name], self.use_original_delta).tolist()
+                c = delta_L(grad_mean[name], fisher[name], self.delta_L_mode).tolist()
                 attn.setdefault(parent_path, {})[gate_type] = c
 
         for parent_path, gates in attn.items():
@@ -538,22 +537,23 @@ class P2RModel(HyperModel):
     def get_student_model(self):
         return self.student
 
-def delta_L(grad, fisher, use_original=True):
+def delta_L(grad, fisher, mode='original'):
     """Compute per-gate-channel Delta L coefficient.
 
-    use_original=True or 'original':  -g² / F   (original delta loss formula)
-    use_original='exp':               exp(-g² / F)  (bounded score in (0, 1])
-    use_original=False:               F / g²   (inverted formula)
+    mode='original':  -g² / F   (original delta loss formula)
+    mode='exp':        exp(-g² / F)  (bounded score in (0, 1])
+    mode='inv':        F / g²   (inverted / negative-inverse formula)
 
     Uses reshape(-1) so single-element dimensions don't collapse to scalar.
     """
     g = grad.reshape(-1)
     f = fisher.reshape(-1)
-    if use_original == 'exp':
+    if mode == 'exp':
         return torch.exp(-(g ** 2) / (f + 1e-12))
-    if use_original:
-        return -(g ** 2) / (f + 1e-12)
-    return f / (g ** 2 + 1e-12)
+    if mode == 'inv':
+        return f / (g ** 2 + 1e-12)
+    # default / 'original'
+    return -(g ** 2) / (f + 1e-12)
 
 
 

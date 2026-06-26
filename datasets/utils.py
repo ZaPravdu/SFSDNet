@@ -27,6 +27,15 @@ def get_testset(config, Dataset, cfg_data, training=False):
     with open(config.scene_path, 'r') as f:
         for line in f.readlines():
             scene_names.append(line.strip('\n'))
+
+    # Single scene fine-tuning: only keep the specified scene
+    if hasattr(config, 'single_scene') and config.single_scene is not None:
+        matched = [s for s in scene_names if s == config.single_scene]
+        assert matched, (
+            f"Single scene '{config.single_scene}' not found in {config.scene_path}. "
+            f"Available scenes: {scene_names[:10]}{'...' if len(scene_names) > 10 else ''}"
+        )
+        scene_names = matched
     if datasetname == 'MovingDroneCrowd':
         # MDC: scenes have sub-clips under frames/ directory
         last_scene_names = []
