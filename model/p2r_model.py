@@ -199,18 +199,26 @@ class P2RModel(HyperModel):
         # Determine if this sample has been selected into the labeled set
         has_gt = self.labeled_set is not None and sid in self.labeled_set
 
-        # ── Validation: skip labeled samples to prevent test leakage ──
+        # ── Loss dispatch ───────────────────────────────────────────
         if mode == 'val':
             if has_gt:
-                return self._zero_loss()
-            return self._supervised_loss((data[0], data[2]), mode)
+                loss = self._zero_loss()
+            else:
+                loss = self._supervised_loss((data[0], data[2]), mode)
 
-        # ── Training dispatch ──────────────────────────────────────
-        if has_gt:
-            return self._supervised_loss((data[0], data[2]), mode)
-        if self.pseudo:
-            return self._p2r_loss(data)
-        return self._zero_loss()
+        elif mode == 'train':
+            if has_gt:
+                loss = self._supervised_loss((data[0], data[2]), mode)
+            else:
+                if self.pseudo:
+                    loss = self._p2r_loss(data)
+                else:
+                    loss = self._zero_loss()
+
+        else:
+            raise ValueError(f"Unknown mode '{mode}'")
+
+        return loss
 
     def on_train_start(self):
         """Log all gate parameters and confirm at least one is trainable."""
@@ -271,7 +279,7 @@ class P2RModel(HyperModel):
 
     def _assert_default_reg_coeff(self):
         """When delta_L_mode is None, all reg_coeff must be 1.0."""
-        if self.delta_L_mode is not None:
+        if self.delta_L_mode:
             return
         for mod in self.student.modules():
             if not isinstance(mod, BaseGatedModule):
