@@ -33,81 +33,88 @@ from model.VIC import Video_Counter
 from model.gate_utils import add_gates_to_conv, add_gates_to_attention
 import model.gate_variance as gate_variance
 import model_assembler
+import argparse
 import random
 import numpy as np
 
 
-seed = 42
+def parse_args():
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-random.seed(seed)
+    # ── 数据 ──
+    parser.add_argument('--data-mode', type=str, default='MovingDroneCrowd')
+    parser.add_argument('--dataset-path', type=str, default=None)
+    parser.add_argument('--scene-path', type=str, default=None)
+    parser.add_argument('--partial', type=float, default=1.0)
+    parser.add_argument('--shuffle', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--seed', type=int, default=42)
 
-# 2. 设置NumPy随机数生成器种子
-np.random.seed(seed)
+    # ── 训练 ──
+    parser.add_argument('--lr', type=float, default=0.0001)
+    parser.add_argument('--weight-decay', type=float, default=0.0)
+    parser.add_argument('--max-epochs', type=int, default=5)
+    parser.add_argument('--batch-size', type=int, default=8)
 
-# 3. 设置PyTorch的CPU和GPU种子
-torch.manual_seed(seed)  # 这个函数同时设置了CPU和所有GPU的种子
+    # ── 冻结 ──
+    parser.add_argument('--freeze-backbone', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--freeze-feature-fuse', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--freeze-head', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--freeze-attention', action=argparse.BooleanOptionalAction, default=True)
+
+    # ── 方法 ──
+    parser.add_argument('--dens-recon', action='store_true')
+    parser.add_argument('--ST', action='store_true')
+    parser.add_argument('--reg-mode', type=str, default='l2', choices=['l1', 'l2'])
+    parser.add_argument('--beta', type=float, default=1.0)
+    parser.add_argument('--use-attention-gate', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--training-mode', type=str, default='p2r')
+    parser.add_argument('--delta-L-mode', type=str, default=None)
+    parser.add_argument('--gt-ratios-per-scene', type=float, default=0.1)
+    parser.add_argument('--single-scene', type=str, default=None)
+    parser.add_argument('--pseudo', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--gate-freeze-json', type=str, default=None)
+    parser.add_argument('--use-variance-reg', action=argparse.BooleanOptionalAction, default=True)
+
+    # ── Stage 1 (variance reg 专属) ──
+    parser.add_argument('--source-scene-path', type=str, default=None)
+    parser.add_argument('--scene-finetune-epochs', type=int, default=1)
+
+    # ── 路径/模式 ──
+    parser.add_argument('--validate-mode', action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument('--weight-path', type=str, default=None)
+    parser.add_argument('--project-name', type=str, default='test')
+
+    args = parser.parse_args()
+    _resolve_default_paths(args)
+    args.experiment_name = _compute_experiment_name(args)
+    return args
 
 
-class TrainConfig:
-    """Configuration for variance-reg training (inherits train_p2r.py pattern)."""
-    def __init__(self):
-        self.validate_mode = False
-        self.resume = False
-        self.ckpt_path = None
+def _resolve_default_paths(args):
+    if args.dataset_path is not None:
+        return
+    base = '/home/mscs/houminqiu2/SFSDNet'
+    if args.data_mode == 'MovingDroneCrowd':
+        args.dataset_path = f'{base}/MovingDroneCrowd'
+        args.scene_path = f'{base}/MovingDroneCrowd/test.txt'
+        if args.source_scene_path is None:
+            args.source_scene_path = f'{base}/MovingDroneCrowd/train.txt'
+    elif args.data_mode.upper() == 'HT21':
+        args.dataset_path = f'{base}/HT21'
+        args.scene_path = f'{base}/HT21/train.txt'
+        if args.source_scene_path is None:
+            args.source_scene_path = f'{base}/HT21/train.txt'
+    else:
+        raise ValueError(f'Unknown data_mode: {args.data_mode}')
+    if args.weight_path is None:
+        args.weight_path = f'{base}/sdnet.pth'
 
-        self.data_mode = 'MovingDroneCrowd'
-        self.device = 'cuda'
-        if self.data_mode == 'MovingDroneCrowd':
-            self.dataset_path = '/home/mscs/houminqiu2/SFSDNet/MovingDroneCrowd'
-            self.scene_path = '/home/mscs/houminqiu2/SFSDNet/MovingDroneCrowd/test.txt'
-            self.source_scene_path = os.path.join(self.dataset_path, 'train.txt')
-        elif self.data_mode.upper() == 'HT21':
-            self.dataset_path = '/home/mscs/houminqiu2/SFSDNet/HT21'
-            self.scene_path = '/home/mscs/houminqiu2/SFSDNet/HT21/train.txt'
-            self.source_scene_path = os.path.join(self.dataset_path, 'train.txt')
-        else:
-            raise ValueError('Data mode error')
 
-        self.weight_path = '/home/mscs/houminqiu2/SFSDNet/sdnet.pth'
-
-        ### Training (Stage 2)
-        self.lr = 0.0001
-        self.weight_decay = 0
-        self.shuffle = True
-        self.max_epochs = 5
-        self.batch_size = 8
-
-        ### Freeze
-        self.freeze_backbone = True
-        self.freeze_feature_fuse = True
-        self.freeze_head = True
-        self.freeze_attention = True
-
-        ### Method
-        self.dens_recon = False
-        self.ST = False
-        self.partial = 1
-        self.reg_mode = 'l2'
-        self.beta = 1
-        self.use_attention_gate = True
-        self.training_mode = 'p2r'
-        self.delta_L_mode = None    # variance reg uses external coeff, not delta-L
-        self.use_variance_reg = True   # enables variance-based reg_coeff
-
-        self.gt_ratios_per_scene = 0.1
-        self.pseudo = True
-
-        ### Stage 1 (per-scene fine-tuning)
-        self.scene_finetune_epochs = 1
-
-        ### Log name
-        # self.project_name = 'SFSDNet'
-        self.project_name = 'test'
-
-        postfix = '-attn_gate' if self.use_attention_gate else ''
-        self.experiment_name = f'{self.data_mode}-var_reg{postfix}-ep{self.scene_finetune_epochs}'
-        if self.validate_mode:
-            self.experiment_name = f'{self.data_mode}-SDNet'
+def _compute_experiment_name(args):
+    if args.validate_mode:
+        return f'{args.data_mode}-SDNet'
+    postfix = '-attn_gate' if args.use_attention_gate else ''
+    return f'{args.data_mode}-var_reg{postfix}-ep{args.scene_finetune_epochs}'
 
 
 def get_callbacks(monitor, monitor_mode, project_name, experiment_name):
@@ -127,14 +134,14 @@ def get_callbacks(monitor, monitor_mode, project_name, experiment_name):
     return [checkpoint_callback, checkpoint_callback_latest]
 
 
-def get_logger(train_cfg):
-    if train_cfg.project_name == 'test':
+def get_logger(args):
+    if args.project_name == 'test':
         return True, None
     config_dict = {k: str(v) if isinstance(v, bool) else v
-                   for k, v in vars(train_cfg).items()}
+                   for k, v in vars(args).items()}
     wandb_logger = WandbLogger(
-        name=train_cfg.experiment_name,
-        project=train_cfg.project_name,
+        name=args.experiment_name,
+        project=args.project_name,
         save_dir='/home/mscs/houminqiu2/SFSDNet/weight',
         offline=False,
         settings=wandb.Settings(_disable_stats=True),
@@ -144,8 +151,14 @@ def get_logger(train_cfg):
 
 
 def main():
-    train_cfg = TrainConfig()
-    datasetting = import_module(f'datasets.setting.{train_cfg.data_mode}')
+    args = parse_args()
+
+    # ── 随机种子 ──
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
+    datasetting = import_module(f'datasets.setting.{args.data_mode}')
     cfg_data = datasetting.cfg_data
 
     # ====================================================================
@@ -153,28 +166,27 @@ def main():
     # ====================================================================
     print('=' * 60)
     print('Stage 1: Per-scene gate fine-tuning on source domain')
-    print(f'  Source scenes: {train_cfg.source_scene_path}')
+    print(f'  Source scenes: {args.source_scene_path}')
     print('=' * 60)
 
-    # Build raw model + identity gates (only in submodules that Stage 2 will gate)
+    # Build raw model + identity gates
     raw_model = Video_Counter(cfg, cfg_data)
-    sd = torch.load(train_cfg.weight_path, map_location='cpu')
+    sd = torch.load(args.weight_path, map_location='cpu')
     sd = {k[7:] if k.startswith('module.') else k: v for k, v in sd.items()}
     raw_model.load_state_dict(sd, strict=True)
     for p in raw_model.parameters():
         p.requires_grad = False
-    # Match P2RModel._inject_gates() exactly — only these 5 submodules get conv gates
     for name in ['share_decoder', 'global_decoder', 'in_out_decoder', 'Extractor', 'feature_fuse']:
         add_gates_to_conv(getattr(raw_model, name))
-    if train_cfg.use_attention_gate:
+    if args.use_attention_gate:
         add_gates_to_attention(raw_model)
 
-    # Per-scene loaders from source domain (train.txt scenes)
+    # Per-scene loaders from source domain
     from types import SimpleNamespace
     src_config = SimpleNamespace(
-        scene_path=train_cfg.source_scene_path,
-        dataset_path=train_cfg.dataset_path,
-        data_mode=train_cfg.data_mode,
+        scene_path=args.source_scene_path,
+        dataset_path=args.dataset_path,
+        data_mode=args.data_mode,
         shuffle=False,
     )
     per_scene_loaders = get_per_scene_loaders(
@@ -182,12 +194,11 @@ def main():
 
     reg_coeff_dict = gate_variance.estimate_gate_uncertainty(
         raw_model, per_scene_loaders,
-        lr=train_cfg.lr,
+        lr=args.lr,
         den_factor=cfg_data.DEN_FACTOR,
-        epochs=train_cfg.scene_finetune_epochs,
+        epochs=args.scene_finetune_epochs,
     )
 
-    # Clean up Stage 1 model and data loaders to free memory
     del raw_model, sd, per_scene_loaders, src_config
     torch.cuda.empty_cache()
 
@@ -203,44 +214,36 @@ def main():
     print('Stage 2: P2R training with variance-based regularisation')
     print('=' * 60)
 
-    # Data loaders (target domain)
-    train_loader, trainset = get_testset(
-        train_cfg, P2RDataset, cfg_data, training=True)
-    test_loader, _ = get_testset(train_cfg, P2RDataset, cfg_data)
+    train_loader, trainset = get_testset(args, P2RDataset, cfg_data, training=True)
+    test_loader, _ = get_testset(args, P2RDataset, cfg_data)
 
-    # Logger + callbacks
-    fast_dev_run, wandb_logger = get_logger(train_cfg)
+    fast_dev_run, wandb_logger = get_logger(args)
 
-    # P2RModel with variance-based reg_coeff
     model = model_assembler.P2RModel(
         cfg=cfg, cfg_data=cfg_data,
-        train_loader=train_loader,
-        **train_cfg.__dict__,
+        train_cfg=args, train_loader=train_loader,
     )
     model._apply_external_reg_coeff(reg_coeff_dict)
 
     callbacks = get_callbacks(
         monitor='train_loss_epoch',
         monitor_mode='min',
-        project_name=train_cfg.project_name,
-        experiment_name=train_cfg.experiment_name,
+        project_name=args.project_name,
+        experiment_name=args.experiment_name,
     )
 
     trainer = Trainer(
         callbacks=callbacks,
-        max_epochs=train_cfg.max_epochs,
-        accelerator='gpu',
-        gpus=1,
+        max_epochs=args.max_epochs,
+        accelerator='gpu', gpus=1,
         logger=wandb_logger,
-        default_root_dir=f'./weight/{train_cfg.project_name}',
-        log_every_n_steps=1,
-        precision=32,
-        fast_dev_run=fast_dev_run,
-        num_sanity_val_steps=0,
-        accumulate_grad_batches=train_cfg.batch_size,
+        default_root_dir=f'./weight/{args.project_name}',
+        log_every_n_steps=1, precision=32,
+        fast_dev_run=fast_dev_run, num_sanity_val_steps=0,
+        accumulate_grad_batches=args.batch_size,
     )
 
-    if train_cfg.validate_mode:
+    if args.validate_mode:
         trainer.validate(model, test_loader)
     else:
         trainer.fit(model, train_loader, test_loader)

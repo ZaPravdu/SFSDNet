@@ -12,6 +12,7 @@ from model.gate_utils import add_gates_to_conv, add_gates_to_attention, load_gat
 from model.gates import BaseGatedModule
 from model.labeled_set import LabeledSet
 from model.fisher import compute_fisher
+from types import SimpleNamespace
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -21,37 +22,17 @@ class P2RModel(HyperModel):
     Teacher-Student P2R semi-supervised training LightningModule.
     Supports both p2r (pseudo-labeling) and supervised training modes.
     """
-    def __init__(self, cfg, cfg_data, **kwargs):
+    def __init__(self, cfg, cfg_data, train_cfg, train_loader=None):
         super().__init__()
-        self.training_mode = kwargs.get('training_mode', 'p2r')
-        self.lr = kwargs.get('lr', 0.0001)
-        self.weight_decay = kwargs.get('weight_decay', 1e-6)
-        self.max_epochs = kwargs.get('max_epochs', 10)
-        self.dens_recon = kwargs.get('dens_recon', False)
-        self.ST = kwargs.get('ST', False)
-        self.beta = kwargs.get('beta', 1)
-        self.reg_mode = kwargs.get('reg_mode', 'l2')
-        self.use_attention_gate = kwargs.get('use_attention_gate', False)
-        self.batch_size = kwargs.get('batch_size', 8)
-        self.gate_freeze_json = kwargs.get('gate_freeze_json', None)
-        self.delta_L_mode = kwargs.get('delta_L_mode', None)  # None, 'original', 'inv', 'exp'
-        self.use_variance_reg = kwargs.get('use_variance_reg', False)
-        self.train_loader = kwargs.get('train_loader', None)
-        self.gt_ratios_per_scene = kwargs.get('gt_ratios_per_scene', 0)
-        self.freeze_backbone = kwargs.get('freeze_backbone', True)
-        self.freeze_feature_fuse = kwargs.get('freeze_feature_fuse', True)
-        self.freeze_head = kwargs.get('freeze_head', True)
-        self.freeze_attention = kwargs.get('freeze_attention', True)
-        self.pseudo = kwargs.get('pseudo', False)
-        self.labeled_set = self._build_labeled_set()
-
+        # 从 argparse.Namespace 批量解包到 self
+        self.__dict__.update(vars(train_cfg))
+        self.train_loader = train_loader
         self.cfg_data = cfg_data
         self.cfg = cfg
-
+        self.labeled_set = self._build_labeled_set()
         self._setup_student_teacher()
-        self._load_pretrained_weights(kwargs.get('weight_path'))
+        self._load_pretrained_weights(self.weight_path)
         self._inject_gates()
-
         self.criterion = nn.MSELoss()
         self.ema_momentum = 0.998
         self.den_factor = self.cfg_data.DEN_FACTOR
@@ -565,6 +546,23 @@ def delta_L(grad, fisher, mode='original'):
 
 
 
+# ── Test helpers ────────────────────────────────────────────────────────────
+
+def _make_train_cfg(**overrides):
+    """Default training config for tests. Override via kwargs."""
+    cfg = SimpleNamespace(
+        training_mode='p2r', lr=0.0001, weight_decay=1e-6, max_epochs=10,
+        dens_recon=False, ST=False, beta=1, reg_mode='l2',
+        use_attention_gate=False, batch_size=8, gate_freeze_json=None,
+        delta_L_mode=None, use_variance_reg=False, gt_ratios_per_scene=0,
+        freeze_backbone=True, freeze_feature_fuse=True, freeze_head=True,
+        freeze_attention=True, pseudo=False, weight_path=None,
+    )
+    for k, v in overrides.items():
+        setattr(cfg, k, v)
+    return cfg
+
+
 # ── pytest-style tests ──────────────────────────────────────────────────────
 
 class TestP2RModelHelpers:
@@ -627,7 +625,7 @@ class TestCalculateLoss:
              patch('model.p2r_model.load_gate_freeze_config'):
             cfg = Mock()
             cfg_data = Mock(DEN_FACTOR=200)
-            m = P2RModel(cfg, cfg_data)
+            m = P2RModel(cfg, cfg_data, _make_train_cfg())
 
             # Stub loss methods to return identifiable values
             m._supervised_loss = Mock(return_value=torch.tensor(10.0))
@@ -670,7 +668,7 @@ class TestCalculateLoss:
 
         loss = model.calculate_loss(data, 'train')
 
-        model._p2r_loss.assert_called_once_with(data, 'train')
+        model._p2r_loss.assert_called_once_with(data)
         model._supervised_loss.assert_not_called()
         assert loss.item() == 20.0
 
@@ -795,7 +793,7 @@ class TestP2RLoss:
              patch('model.p2r_model.load_gate_freeze_config'):
             cfg = Mock()
             cfg_data = Mock(DEN_FACTOR=200)
-            m = P2RModel(cfg, cfg_data)
+            m = P2RModel(cfg, cfg_data, _make_train_cfg())
 
             # Mock heavy forward passes
             m.teacher = MagicMock()
@@ -843,7 +841,7 @@ class TestP2RLoss:
         """_p2r_loss always returns a scalar tensor with gradients."""
         model.teacher.return_value = self._teacher_out()
         model.student.return_value = self._student_out()
-        loss = model._p2r_loss(data, 'train')
+        loss = model._p2r_loss(data)
         assert isinstance(loss, torch.Tensor)
         assert loss.ndim == 0
         assert loss.requires_grad
@@ -853,35 +851,27 @@ class TestP2RLoss:
         weak, _, targets = data
         model.teacher.return_value = self._teacher_out()
         model.student.return_value = self._student_out()
-        model._p2r_loss(data, 'train')
+        model._p2r_loss(data)
         model.teacher.assert_called_once_with(weak, targets)
 
     def test_teacher_inference_under_no_grad(self, model, data):
         """Teacher forward is wrapped in torch.no_grad() — no gradient tracking."""
         model.teacher.return_value = self._teacher_out()
         model.student.return_value = self._student_out()
-        loss = model._p2r_loss(data, 'train')
+        loss = model._p2r_loss(data)
         # Verify that the student tensor (not teacher) connects to grad graph.
         # If teacher grad leaked, the returned loss would be a leaf tensor.
         assert loss.grad_fn is not None, "loss must be connected to the computation graph"
 
-    # ── Student input depends on mode ─────────────────────────────
+    # ── Student input ────────────────────────────────────────────
 
-    def test_student_strong_img_in_train(self, model, data):
-        """Train mode: student receives strongly augmented images."""
+    def test_student_receives_strong_img(self, model, data):
+        """Student always receives strongly augmented images."""
         _, strong, targets = data
         model.teacher.return_value = self._teacher_out()
         model.student.return_value = self._student_out()
-        model._p2r_loss(data, 'train')
+        model._p2r_loss(data)
         model.student.assert_called_once_with(strong, targets)
-
-    def test_student_weak_img_in_val(self, model, data):
-        """Val mode: student receives weakly augmented images."""
-        weak, _, targets = data
-        model.teacher.return_value = self._teacher_out()
-        model.student.return_value = self._student_out()
-        model._p2r_loss(data, 'val')
-        model.student.assert_called_once_with(weak, targets)
 
     # ── Loss computation ──────────────────────────────────────────
 
@@ -893,10 +883,10 @@ class TestP2RLoss:
         model.student.return_value = self._student_out(0.01, 0.02, 0.0)
         model._add_reg = MagicMock(side_effect=lambda x: x + 5.0)
 
-        loss = model._p2r_loss(data, 'train')
-
-        raw = (4.0 + 10 * 16.0 + 0.0) / 3.0  # = 54.666...
-        model._add_reg.assert_called_once_with(pytest.approx(raw))
+        loss = model._p2r_loss(data)
+        raw = torch.tensor((4.0 + 10 * 16.0 + 0.0) / 3.0)
+        model._add_reg.assert_called_once()
+        assert torch.isclose(model._add_reg.call_args[0][0], raw, atol=1e-4)
         assert loss.item() == pytest.approx(raw + 5.0)
 
     def test_loss_scales_with_den_factor(self, model, data):
@@ -904,7 +894,7 @@ class TestP2RLoss:
         # pred=0.01, target=0.0 → scaled: 2.0 vs 0.0 → MSE = 4.0
         model.teacher.return_value = self._teacher_out(0.0, 0.0, 0.0)
         model.student.return_value = self._student_out(0.01, 0.0, 0.0)
-        loss = model._p2r_loss(data, 'train')
+        loss = model._p2r_loss(data)
         # Only global contributes: (4 + 0 + 0) / 3
         assert loss.item() == pytest.approx(4.0 / 3.0)
 
@@ -912,34 +902,19 @@ class TestP2RLoss:
         """Share loss is weighted 10× in the composition."""
         model.teacher.return_value = self._teacher_out(0.0, 0.0, 0.0)
         model.student.return_value = self._student_out(0.0, 0.01, 0.0)
-        loss = model._p2r_loss(data, 'train')
+        loss = model._p2r_loss(data)
         # Only share contributes: (0 + 10*4 + 0) / 3
         assert loss.item() == pytest.approx(10.0 * 4.0 / 3.0)
 
     # ── Logging ───────────────────────────────────────────────────
 
-    @pytest.mark.parametrize('mode', ['train', 'val'])
-    def test_logs_mse_loss(self, model, data, mode):
-        """self.log is called with f'{mode}_loss'."""
+    def test_logs_train_loss(self, model, data):
+        """self.log is called with 'train_loss'."""
         model.teacher.return_value = self._teacher_out()
         model.student.return_value = self._student_out()
-        model._p2r_loss(data, mode)
+        model._p2r_loss(data)
         model.log.assert_called_once()
-        assert model.log.call_args[0][0] == f'{mode}_loss'
-
-    def test_val_logs_metrics(self, model, data):
-        """Validation mode calls _log_val_metrics."""
-        model.teacher.return_value = self._teacher_out()
-        model.student.return_value = self._student_out()
-        model._p2r_loss(data, 'val')
-        model._log_val_metrics.assert_called_once()
-
-    def test_train_skips_metrics(self, model, data):
-        """Training mode does NOT call _log_val_metrics."""
-        model.teacher.return_value = self._teacher_out()
-        model.student.return_value = self._student_out()
-        model._p2r_loss(data, 'train')
-        model._log_val_metrics.assert_not_called()
+        assert model.log.call_args[0][0] == 'train_loss'
 
     # ── dens_recon ────────────────────────────────────────────────
 
@@ -951,31 +926,20 @@ class TestP2RLoss:
         model.teacher.Gaussian = MagicMock(return_value=self._dens(0.5))
 
         with patch('model.p2r_model.den2seq', return_value=torch.tensor([[1, 1]])) as md:
-            model._p2r_loss(data, 'train')
+            model._p2r_loss(data)
             # den2seq: 2 maps (global, share) × B=2 batch items = 4 calls
             assert md.call_count == 4
             # Gaussian: re-blur for global, share, and residual in_out = 3 calls
             assert model.teacher.Gaussian.call_count == 3
 
-    def test_dens_recon_skipped_in_val(self, model, data):
-        """dens_recon=True but mode=val: no reconstruction."""
-        model.teacher.return_value = self._teacher_out()
-        model.student.return_value = self._student_out()
-        model.dens_recon = True
-        model.teacher.Gaussian = MagicMock()
-        with patch('model.p2r_model.den2seq') as md:
-            model._p2r_loss(data, 'val')
-            md.assert_not_called()
-            model.teacher.Gaussian.assert_not_called()
-
     def test_dens_recon_disabled_no_effect(self, model, data):
-        """dens_recon=False: no reconstruction even in train mode."""
+        """dens_recon=False: no reconstruction."""
         model.teacher.return_value = self._teacher_out()
         model.student.return_value = self._student_out()
         model.dens_recon = False
         model.teacher.Gaussian = MagicMock()
         with patch('model.p2r_model.den2seq') as md:
-            model._p2r_loss(data, 'train')
+            model._p2r_loss(data)
             md.assert_not_called()
             model.teacher.Gaussian.assert_not_called()
 
@@ -987,11 +951,11 @@ class TestP2RLoss:
         model.teacher.Gaussian = MagicMock(return_value=self._dens(0.5))
 
         with patch('model.p2r_model.den2seq', return_value=torch.tensor([[1, 1]])):
-            loss_with = model._p2r_loss(data, 'train').item()
+            loss_with = model._p2r_loss(data).item()
 
         model.teacher.Gaussian.reset_mock()
         model.dens_recon = False
-        loss_without = model._p2r_loss(data, 'train').item()
+        loss_without = model._p2r_loss(data).item()
 
         assert loss_with != loss_without, (
             f"dens_recon should change the loss value "
@@ -1022,7 +986,7 @@ class TestApplyExternalRegCoeff:
              patch('model.p2r_model.load_gate_freeze_config'):
             cfg = Mock()
             cfg_data = Mock(DEN_FACTOR=200)
-            p2r = P2RModel(cfg, cfg_data)
+            p2r = P2RModel(cfg, cfg_data, _make_train_cfg())
             p2r.student = model
             return p2r
 
