@@ -67,9 +67,9 @@ def parse_args():
     parser.add_argument('--beta', type=float, default=1.0)
     parser.add_argument('--use-attention-gate', type=int, default=1, choices=[0, 1])
     parser.add_argument('--training-mode', type=str, default='p2r')
-    parser.add_argument('--delta-L-mode', type=str, default=None)
+    parser.add_argument('--delta-L-mode', nargs='?', type=str, const='', default=None)
     parser.add_argument('--gt-ratios-per-scene', type=float, default=0.0)
-    parser.add_argument('--single-scene', type=str, default='')
+    parser.add_argument('--single-scene', nargs='?', type=str, const='', default='')
     parser.add_argument('--pseudo', type=int, default=1, choices=[0, 1])
     parser.add_argument('--gate-freeze-json', type=str, default=None)
     parser.add_argument('--use-variance-reg', type=int, default=0, choices=[0, 1])
@@ -109,7 +109,7 @@ def _compute_experiment_name(args):
     postfix = '-attn_gate' if args.use_attention_gate else ''
     scene = args.single_scene if args.single_scene else 'all'
     name = f'{args.data_mode}-{args.reg_mode}-gt{args.gt_ratios_per_scene}-{scene}{postfix}'
-    if args.delta_L_mode is not None:
+    if args.delta_L_mode:
         name += f'-{args.delta_L_mode}_deltaL{args.beta}'
     return name
         
