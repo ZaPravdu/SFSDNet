@@ -38,6 +38,20 @@ import random
 import numpy as np
 
 
+_BOOL_FIELDS = [
+    'shuffle', 'validate_mode', 'dens_recon', 'ST',
+    'freeze_backbone', 'freeze_feature_fuse', 'freeze_head', 'freeze_attention',
+    'use_attention_gate', 'pseudo', 'use_variance_reg',
+]
+
+
+def _conv_bool(args):
+    for f in _BOOL_FIELDS:
+        v = getattr(args, f, None)
+        if v is not None:
+            setattr(args, f, bool(v))
+
+
 def parse_args():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
@@ -46,7 +60,7 @@ def parse_args():
     parser.add_argument('--dataset-path', type=str, default=None)
     parser.add_argument('--scene-path', type=str, default=None)
     parser.add_argument('--partial', type=float, default=1.0)
-    parser.add_argument('--shuffle', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--shuffle', type=int, default=1, choices=[0, 1])
     parser.add_argument('--seed', type=int, default=42)
 
     # ── 训练 ──
@@ -56,35 +70,36 @@ def parse_args():
     parser.add_argument('--batch-size', type=int, default=8)
 
     # ── 冻结 ──
-    parser.add_argument('--freeze-backbone', action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument('--freeze-feature-fuse', action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument('--freeze-head', action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument('--freeze-attention', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--freeze-backbone', type=int, default=1, choices=[0, 1])
+    parser.add_argument('--freeze-feature-fuse', type=int, default=1, choices=[0, 1])
+    parser.add_argument('--freeze-head', type=int, default=1, choices=[0, 1])
+    parser.add_argument('--freeze-attention', type=int, default=1, choices=[0, 1])
 
     # ── 方法 ──
-    parser.add_argument('--dens-recon', action='store_true')
-    parser.add_argument('--ST', action='store_true')
+    parser.add_argument('--dens-recon', type=int, default=0, choices=[0, 1])
+    parser.add_argument('--ST', type=int, default=0, choices=[0, 1])
     parser.add_argument('--reg-mode', type=str, default='l2', choices=['l1', 'l2'])
     parser.add_argument('--beta', type=float, default=1.0)
-    parser.add_argument('--use-attention-gate', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--use-attention-gate', type=int, default=1, choices=[0, 1])
     parser.add_argument('--training-mode', type=str, default='p2r')
     parser.add_argument('--delta-L-mode', type=str, default=None)
     parser.add_argument('--gt-ratios-per-scene', type=float, default=0.1)
-    parser.add_argument('--single-scene', type=str, default=None)
-    parser.add_argument('--pseudo', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--single-scene', type=str, default='')
+    parser.add_argument('--pseudo', type=int, default=1, choices=[0, 1])
     parser.add_argument('--gate-freeze-json', type=str, default=None)
-    parser.add_argument('--use-variance-reg', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--use-variance-reg', type=int, default=1, choices=[0, 1])
 
     # ── Stage 1 (variance reg 专属) ──
     parser.add_argument('--source-scene-path', type=str, default=None)
     parser.add_argument('--scene-finetune-epochs', type=int, default=1)
 
     # ── 路径/模式 ──
-    parser.add_argument('--validate-mode', action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument('--validate-mode', type=int, default=0, choices=[0, 1])
     parser.add_argument('--weight-path', type=str, default=None)
     parser.add_argument('--project-name', type=str, default='test')
 
     args = parser.parse_args()
+    _conv_bool(args)
     _resolve_default_paths(args)
     args.experiment_name = _compute_experiment_name(args)
     return args

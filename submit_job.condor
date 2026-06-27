@@ -25,23 +25,22 @@ when_to_transfer_output = ON_EXIT
 # transfer_input_files = model.py,data/
 # transfer_output_files = checkpoints/,results/
 
-# ── 参数传递（可通过 condor_submit 变量覆盖） ──
+# ── 参数传递（通过 condor_submit 变量覆盖） ──
 # 用法：
 #   condor_submit submit_job.condor
-#   condor_submit submit_job.condor LR=0.001 REG_MODE=kl PSEUDO=--no-pseudo
+#   condor_submit submit_job.condor LR=0.001 REG_MODE=kl VALIDATE=1
 arguments = --lr $(LR) --reg-mode $(REG_MODE) --max-epochs $(MAX_EPOCHS) --batch-size $(BATCH_SIZE) \
-            --gt-ratios-per-scene $(GT_RATIO) --beta $(BETA) --single-scene $(SINGLE_SCENE) \
-            $(PSEUDO) $(VALIDATE) --weight-path $(WEIGHT_PATH)
+            --pseudo $(PSEUDO) --validate-mode $(VALIDATE) \
+            --gt-ratios-per-scene $(GT_RATIO) --beta $(BETA) --single-scene $(SINGLE_SCENE)
 LR = 0.0001
 REG_MODE = l2
 MAX_EPOCHS = 5
 BATCH_SIZE = 8
+PSEUDO = 1
+VALIDATE = 0
 GT_RATIO = 0.0
 BETA = 1.0
 SINGLE_SCENE =
-PSEUDO =
-VALIDATE = --validate-mode
-WEIGHT_PATH =
 
 # 提交作业
 queue

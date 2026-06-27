@@ -29,7 +29,7 @@ def get_testset(config, Dataset, cfg_data, training=False):
             scene_names.append(line.strip('\n'))
 
     # Single scene fine-tuning: only keep the specified scene
-    if hasattr(config, 'single_scene') and config.single_scene is not None:
+    if hasattr(config, 'single_scene') and config.single_scene:
         matched = [s for s in scene_names if s == config.single_scene]
         assert matched, (
             f"Single scene '{config.single_scene}' not found in {config.scene_path}. "
