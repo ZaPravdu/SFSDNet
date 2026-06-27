@@ -214,12 +214,14 @@ class P2RModel(HyperModel):
         self._validate_gt_sampling()
 
     def on_after_backward(self):
-        for name, p in self.student.named_parameters():
-            if (name.endswith('.gate') or name.endswith('_gate_logit')):
-                assert p.grad is not None, (
-                    f"Gate '{name}' has None gradient after backward — "
-                    f"not connected to computation graph"
-                )
+        # 无标签样本（pseudo=False）走 zero_loss，gate 不会有梯度，跳过断言
+        if self.pseudo:
+            for name, p in self.student.named_parameters():
+                if name.endswith('.gate') or name.endswith('_gate_logit'):
+                    assert p.grad is not None, (
+                        f"Gate '{name}' has None gradient after backward — "
+                        f"not connected to computation graph"
+                    )
 
 
     def ema_update(self):
@@ -392,12 +394,12 @@ class P2RModel(HyperModel):
         global_loss = self.criterion(pre_global * self.den_factor, gt_global * self.den_factor)
         share_loss = self.criterion(pre_share * self.den_factor, gt_share * self.den_factor)
         io_loss = self.criterion(pre_io * self.den_factor, gt_io * self.den_factor)
-        loss = self._add_reg((global_loss + 10 * share_loss + io_loss) / 3)
+        loss = (global_loss + 10 * share_loss + io_loss) / 3
 
         self.log('gt_global_loss', global_loss.item(), on_epoch=True, prog_bar=True, sync_dist=True)
         self.log('gt_share_loss', share_loss.item(), on_epoch=True, prog_bar=True, sync_dist=True)
         self.log('gt_in_out_loss', io_loss.item(), on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log(f'{mode}_loss', loss, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log(f'{mode}_loss', loss, on_epoch=True, prog_bar=True, sync_dist=True, on_step=True)
 
         if mode == 'val':
             self._log_val_metrics(pre_global, gt_global, pre_share, gt_share, pre_io, gt_io)
@@ -544,6 +546,68 @@ def delta_L(grad, fisher, mode='original'):
     # default / 'original'
     return -(g ** 2) / (f + 1e-12)
 
+
+# ── Debug visualization ────────────────────────────────────────────────────
+
+def vis_batch(data, gt_den=None, pred_den=None, idx=0):
+    """可视化一个 batch 的第 idx 个样本：图像 + 标注点 + 密度图。
+
+    调试时在 training loop 里调用：
+        pre, gt, ... = model(imgs, targets)
+        vis_batch(data, gt_den=gt, pred_den=pre, idx=0)
+        vis_batch(data, gt_den=gt, pred_den=pre, idx=0, save='debug.png')  # 保存
+
+    data: (weak, strong, targets) 或 (images, targets)
+    gt_den: [B,1,H,W] 真值密度图（model forward 返回的 gt_global）
+    pred_den: [B,1,H,W] 预测密度图（model forward 返回的 pre_global）
+    save: 保存路径，不传则 plt.show()
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    if len(data) == 3:
+        weak_img, strong_img, targets = data
+    else:
+        weak_img = strong_img = data[0]
+        targets = data[1]
+
+    tw = targets[idx]
+    pts = tw['points'].cpu().numpy()
+
+    def _to_img(t):
+        img = t[idx].float().cpu().numpy().transpose(1, 2, 0)
+        lo, hi = img.min(), img.max()
+        return (img - lo) / (hi - lo + 1e-8)
+
+    # 列：(img, title, den)
+    pairs = [(_to_img(weak_img),
+              f'Weak {tw.get("scene_name","?")} fr={tw.get("frame","?")} N={len(pts)}',
+              gt_den)]
+    if pred_den is not None:
+        img = _to_img(strong_img) if len(data) == 3 else _to_img(weak_img)
+        pairs.append((img, f'Pred N={len(pts)}', pred_den))
+
+    fig, axes = plt.subplots(1, len(pairs), figsize=(7 * len(pairs), 5))
+    if len(pairs) == 1:
+        axes = [axes]
+
+    for ax, (img, title, den) in zip(axes, pairs):
+        ax.imshow(img, cmap='gray')
+        if len(pts):
+            ax.scatter(pts[:, 0], pts[:, 1], c='lime', s=10, marker='.')
+        if den is not None:
+            d = den[idx, 0].detach().cpu().numpy()
+            d = (d - d.min()) / (d.max() - d.min() + 1e-8)
+            ax.imshow(d, cmap='jet', alpha=0.5)
+        ax.set_title(title)
+        ax.axis('off')
+
+    plt.tight_layout()
+
+    fig.savefig('./vis', dpi=150, bbox_inches='tight')
+
+    plt.close(fig)
 
 
 # ── Test helpers ────────────────────────────────────────────────────────────

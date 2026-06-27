@@ -34,9 +34,11 @@ class VGG16_FPN_Encoder(nn.Module):
         )
     def forward(self, x):
         f_list = []
-        x1 = self.layer1(x)
+        # x1 = self.layer1(x)
+        x1 = checkpoint.checkpoint(self.layer1, x)
         f_list.append(x1)
-        x2 = self.layer2(x1)
+        x2 = checkpoint.checkpoint(self.layer2, x1)
+        # x2 = self.layer2(x1)
         f_list.append(x2)
         x3 = checkpoint.checkpoint(self.layer3, x2)
         # x3 = self.layer3(x2)
