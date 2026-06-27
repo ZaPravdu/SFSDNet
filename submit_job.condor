@@ -31,7 +31,7 @@ when_to_transfer_output = ON_EXIT
 #   condor_submit submit_job.condor LR=0.001 REG_MODE=kl VALIDATE=1
 arguments = --lr $(LR) --reg-mode $(REG_MODE) --max-epochs $(MAX_EPOCHS) --batch-size $(BATCH_SIZE) \
             --pseudo $(PSEUDO) --validate-mode $(VALIDATE) \
-            --gt-ratios-per-scene $(GT_RATIO) --beta $(BETA) --single-scene $(SINGLE_SCENE)
+            --gt-ratios-per-scene $(GT_RATIO) --beta $(BETA) --single-scene $(SINGLE_SCENE) --delta-L-mode $(DELTA_L_MODE)
 LR = 0.0001
 REG_MODE = l2
 MAX_EPOCHS = 5
@@ -41,6 +41,7 @@ VALIDATE = 0
 GT_RATIO = 0.0
 BETA = 1.0
 SINGLE_SCENE =
+DELTA_L_MODE = exp
 
 # 提交作业
 queue
