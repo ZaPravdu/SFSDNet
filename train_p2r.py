@@ -1,27 +1,43 @@
+"""
+Training script: P2R semi-supervised learning with optional variance-based gate regularization.
+
+Mode 1 — P2R training (default):
+    Standard teacher-student P2R training with gate regularization.
+
+Mode 2 — Variance-based gate regularization (--use-variance-reg 1):
+    Stage 1: For each source-domain scene, fine-tune gates independently,
+             collect gate values, compute cross-scene variance, derive reg_coeff.
+    Stage 2: Inject the variance-based reg_coeff into a fresh P2RModel,
+             then run normal P2R (or supervised) training.
+
+Usage:
+    python train_p2r.py
+    python train_p2r.py --use-variance-reg 1 --scene-finetune-epochs 3
+"""
+
 import sys
-import datasets
-from importlib import import_module
-from config import cfg
-
-from datasets.dataset import P2RDataset
-from datasets.utils import get_testset
-# from dataset_assembler import get_testset
-from model.VIC import Video_Counter
-import torch
-import datasets
-# from misc.tools import is_main_process
-
 import os
+import random
+
+import numpy as np
 import torch
 from torch.utils.data import DataLoader, Subset
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 import wandb
+from importlib import import_module
+
+import datasets
+from config import cfg
+from datasets.dataset import P2RDataset
+from datasets.utils import get_testset, get_per_scene_loaders
+from model.VIC import Video_Counter
+from model.gate_utils import add_gates_to_conv, add_gates_to_attention
+import model.gate_variance as gate_variance
 import model_assembler
 import argparse
-import random
-import numpy as np
+
 
 _BOOL_FIELDS = [
     'shuffle', 'validate_mode', 'dens_recon', 'ST',
@@ -41,7 +57,7 @@ def parse_args():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     # ── 数据 ──
-    parser.add_argument('--data-mode', type=str, default='MovingDroneCrowd')
+    parser.add_argument('--data-mode', type=str, default='MovingDroneCrowd', choices=['MovingDroneCrowd', 'HT21'])
     parser.add_argument('--dataset-path', type=str, default=None)
     parser.add_argument('--scene-path', type=str, default=None)
     parser.add_argument('--partial', type=float, default=1.0)
@@ -66,13 +82,17 @@ def parse_args():
     parser.add_argument('--reg-mode', type=str, default='l2', choices=['l1', 'l2'])
     parser.add_argument('--beta', type=float, default=1.0)
     parser.add_argument('--use-attention-gate', type=int, default=1, choices=[0, 1])
-    parser.add_argument('--training-mode', type=str, default='p2r')
-    parser.add_argument('--delta-L-mode', nargs='?', type=str, const='exp', default=None)
+    parser.add_argument('--training-mode', type=str, default='p2r', choices=['p2r', 'supervised'])
+    parser.add_argument('--delta-L-mode', nargs='?', type=str, const='exp', default=None, choices=['exp', 'original', 'inv'])
     parser.add_argument('--gt-ratios-per-scene', type=float, default=0.0)
     parser.add_argument('--single-scene', nargs='?', type=str, const='scene_25', default=None)
     parser.add_argument('--pseudo', type=int, default=1, choices=[0, 1])
     parser.add_argument('--gate-freeze-json', type=str, default=None)
     parser.add_argument('--use-variance-reg', type=int, default=0, choices=[0, 1])
+
+    # ── 方差正则化（Stage 1） ──
+    parser.add_argument('--source-scene-path', type=str, default=None)
+    parser.add_argument('--scene-finetune-epochs', type=int, default=1)
 
     # ── 路径/模式 ──
     parser.add_argument('--validate-mode', type=int, default=0, choices=[0, 1])
@@ -93,9 +113,13 @@ def _resolve_default_paths(args):
     if args.data_mode == 'MovingDroneCrowd':
         args.dataset_path = f'{base}/MovingDroneCrowd'
         args.scene_path = f'{base}/MovingDroneCrowd/test.txt'
+        if args.source_scene_path is None:
+            args.source_scene_path = f'{base}/MovingDroneCrowd/train.txt'
     elif args.data_mode.upper() == 'HT21':
         args.dataset_path = f'{base}/HT21'
         args.scene_path = f'{base}/HT21/test.txt'
+        if args.source_scene_path is None:
+            args.source_scene_path = f'{base}/HT21/train.txt'
     else:
         raise ValueError(f'Unknown data_mode: {args.data_mode}')
     if args.weight_path is None:
@@ -106,13 +130,16 @@ def _compute_experiment_name(args):
     if args.validate_mode:
         scene = args.single_scene if args.single_scene else 'all'
         return f'{args.data_mode}-SDNet-{scene}'
+    if args.use_variance_reg:
+        postfix = '-attn_gate' if args.use_attention_gate else ''
+        return f'{args.data_mode}-var_reg{postfix}-ep{args.scene_finetune_epochs}'
     postfix = '-attn_gate' if args.use_attention_gate else ''
     scene = args.single_scene if args.single_scene else 'all'
     name = f'{args.data_mode}-{args.reg_mode}-gt{args.gt_ratios_per_scene}-{scene}{postfix}'
     if args.delta_L_mode:
         name += f'-{args.delta_L_mode}_deltaL{args.beta}'
     return name
-        
+
 
 def get_callbacks(monitor, monitor_mode, project_name, experiment_name, patience=3):
     checkpoint_callback = ModelCheckpoint(
@@ -120,26 +147,35 @@ def get_callbacks(monitor, monitor_mode, project_name, experiment_name, patience
         dirpath=f'./weight/{project_name}/{experiment_name}/',
         filename='{epoch:02d}-{'+ monitor +':.4f}',
         save_top_k=1,
-        mode=monitor_mode
+        mode=monitor_mode,
     )
     # early_stopping = EarlyStopping(monitor=monitor, patience=patience, mode=monitor_mode)
     checkpoint_callback_latest = ModelCheckpoint(
         monitor=None,
         save_top_k=1,
         dirpath=f'./weight/{project_name}/{experiment_name}/',
-        filename=f'{experiment_name}-latest'
+        filename=f'{experiment_name}-latest',
     )
-    callbacks=[
+    return [
         # early_stopping,
         checkpoint_callback,
-        checkpoint_callback_latest
+        checkpoint_callback_latest,
     ]
-    return callbacks
-# os.chdir('/home/mscs/houminqiu2/SFSDNet/')
+
+
+def get_logger(args):
+    if args.project_name == 'test':
+        return True, None
+    config_dict = {k: str(v) if isinstance(v, bool) else v for k, v in vars(args).items()}
+    wandb_logger = WandbLogger(
+        name=args.experiment_name, project=args.project_name,
+        save_dir='/home/mscs/houminqiu2/SFSDNet/weight', offline=False,
+        settings=wandb.Settings(_disable_stats=True), config=config_dict,
+    )
+    return False, wandb_logger
+
 
 def main():
-    # os.environ['WANDB_MODE'] = 'offline'
-
     args = parse_args()
 
     # ── 随机种子 ──
@@ -151,21 +187,75 @@ def main():
     datasetting = import_module(f'datasets.setting.{args.data_mode}')
     cfg_data = datasetting.cfg_data
 
-    # ── DataLoader ──
+    # ====================================================================
+    # Stage 1: Gate uncertainty estimation (variance reg mode only)
+    # ====================================================================
+    if args.use_variance_reg:
+        print('=' * 60)
+        print('Stage 1: Per-scene gate fine-tuning on source domain')
+        print(f'  Source scenes: {args.source_scene_path}')
+        print('=' * 60)
+
+        raw_model = Video_Counter(cfg, cfg_data)
+        sd = torch.load(args.weight_path, map_location='cpu')
+        sd = {k[7:] if k.startswith('module.') else k: v for k, v in sd.items()}
+        raw_model.load_state_dict(sd, strict=True)
+        for p in raw_model.parameters():
+            p.requires_grad = False
+        for name in ['share_decoder', 'global_decoder', 'in_out_decoder', 'Extractor', 'feature_fuse']:
+            add_gates_to_conv(getattr(raw_model, name))
+        if args.use_attention_gate:
+            add_gates_to_attention(raw_model)
+
+        from types import SimpleNamespace
+        src_config = SimpleNamespace(
+            scene_path=args.source_scene_path,
+            dataset_path=args.dataset_path,
+            data_mode=args.data_mode,
+            shuffle=False,
+        )
+        per_scene_loaders = get_per_scene_loaders(
+            src_config, P2RDataset, cfg_data, training=True)
+
+        reg_coeff_dict = gate_variance.estimate_gate_uncertainty(
+            raw_model, per_scene_loaders,
+            lr=args.lr,
+            den_factor=cfg_data.DEN_FACTOR,
+            epochs=args.scene_finetune_epochs,
+        )
+
+        del raw_model, sd, per_scene_loaders, src_config
+        torch.cuda.empty_cache()
+
+        n_gates = len(reg_coeff_dict)
+        n_params = sum(len(v) for v in reg_coeff_dict.values())
+        print(f'\n[Stage 1] Estimated uncertainty for {n_gates} gate params '
+              f'({n_params} total channels/heads)')
+
+        print('\n' + '=' * 60)
+        print('Stage 2: P2R training with variance-based regularisation')
+        print('=' * 60)
+
+    # ====================================================================
+    # Stage 2 / P2R 训练
+    # ====================================================================
     train_loader, trainset = get_testset(args, P2RDataset, cfg_data, training=True)
     test_loader, _ = get_testset(args, P2RDataset, cfg_data)
 
-    # ── Logger & Model ──
     fast_dev_run, wandb_logger = get_logger(args)
-    model = model_assembler.P2RModel(cfg=cfg, cfg_data=cfg_data, train_cfg=args, train_loader=train_loader)
-
-    # ── Callbacks ──
-    callbacks = get_callbacks(
-        monitor='train_loss_epoch', monitor_mode='min',
-        project_name=args.project_name, experiment_name=args.experiment_name, patience=3,
+    model = model_assembler.P2RModel(
+        cfg=cfg, cfg_data=cfg_data,
+        train_cfg=args, train_loader=train_loader,
     )
 
-    # ── Trainer ──
+    if args.use_variance_reg:
+        model._apply_external_reg_coeff(reg_coeff_dict)
+
+    callbacks = get_callbacks(
+        monitor='train_loss_epoch', monitor_mode='min',
+        project_name=args.project_name, experiment_name=args.experiment_name,
+    )
+
     trainer = Trainer(
         callbacks=callbacks,
         max_epochs=args.max_epochs, accelerator='gpu', gpus=1,
@@ -181,18 +271,5 @@ def main():
         trainer.fit(model, train_loader, test_loader)
 
 
-def get_logger(args):
-    if args.project_name == 'test':
-        return True, None
-    config_dict = {k: str(v) if isinstance(v, bool) else v for k, v in vars(args).items()}
-    wandb_logger = WandbLogger(
-        name=args.experiment_name, project=args.project_name,
-        save_dir='/home/mscs/houminqiu2/SFSDNet/weight', offline=False,
-        settings=wandb.Settings(_disable_stats=True), config=config_dict,
-    )
-    return False, wandb_logger
-
-
 if __name__ == '__main__':
     main()
-
