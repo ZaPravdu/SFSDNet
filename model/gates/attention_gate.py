@@ -1,6 +1,7 @@
 import math
 import torch
 import torch.nn as nn
+from torch.utils import checkpoint
 
 from model.gates.base import BaseGatedModule
 
@@ -80,7 +81,9 @@ class GatedAttention(BaseGatedAttention):
 
     def forward(self, x):
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        qkv = self.qkv(x)
+        # qkv = checkpoint.checkpoint(self.qkv, x)
+        qkv = qkv.reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
         q, k, v = self._apply_gates(q, k, v)
         x = self._attend(q, k, v, B, N)
@@ -100,8 +103,11 @@ class GatedCrossAttention(BaseGatedAttention):
         B, Nx, C = x.shape
         Ny = y.shape[1]
         q = self.wq(x).reshape(B, Nx, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        # q = checkpoint.checkpoint(self.wq, x).reshape(B, Nx, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
         k = self.wk(y).reshape(B, Ny, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        # k = checkpoint.checkpoint(self.wk, y).reshape(B, Ny, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
         v = self.wv(y).reshape(B, Ny, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        # v = checkpoint.checkpoint(self.wv, y).reshape(B, Ny, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
         q, k, v = self._apply_gates(q, k, v)
         x = self._attend(q, k, v, B, Nx)
         x = self.proj(x)
