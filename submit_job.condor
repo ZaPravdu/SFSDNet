@@ -25,16 +25,10 @@ when_to_transfer_output = ON_EXIT
 # transfer_input_files = model.py,data/
 # transfer_output_files = checkpoints/,results/
 
-# ── 参数传递（通过 condor_submit 变量覆盖） ──
-# 用法：
-#   condor_submit submit_job.condor
-#   condor_submit submit_job.condor LR=0.001 REG_MODE=kl VALIDATE=1
-#   condor_submit submit_job.condor SINGLE_SCENE=scene_25 PSEUDO=1 GT_RATIO=0.3 DELTA_L_MODE=exp
-arguments = --lr $(LR) --reg-mode $(REG_MODE) --max-epochs $(MAX_EPOCHS) --batch-size $(BATCH_SIZE) \
-            --pseudo $(PSEUDO) --validate-mode $(VALIDATE) \
-            --gt-ratios-per-scene $(GT_RATIO) --beta $(BETA) \
-            --single-scene $(SINGLE_SCENE) --delta-L-mode $(DELTA_L_MODE)
-
+# ── 参数传递 ──
+# 修改下方变量值后 condor_submit submit_job.condor 即可
+# condor_submit submit_job.condor 不支持命令行覆盖变量，改这里
+arguments = --lr $(LR) --reg-mode $(REG_MODE) --max-epochs $(MAX_EPOCHS) --batch-size $(BATCH_SIZE) --pseudo $(PSEUDO) --validate-mode $(VALIDATE) --gt-ratios-per-scene $(GT_RATIO) --beta $(BETA) --single-scene $(SINGLE_SCENE) --delta-L-mode $(DELTA_L_MODE)
 LR = 0.0001
 REG_MODE = l2
 MAX_EPOCHS = 5
@@ -44,7 +38,7 @@ VALIDATE = 0
 GT_RATIO = 0.0
 BETA = 1.0
 SINGLE_SCENE =
-DELTA_L_MODE = exp
+DELTA_L_MODE =
 
 # 提交作业
 queue
