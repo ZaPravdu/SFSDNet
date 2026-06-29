@@ -82,7 +82,7 @@ def parse_args():
     parser.add_argument('--beta', type=float, default=1.0)
     parser.add_argument('--use-attention-gate', type=int, default=1, choices=[0, 1])
     parser.add_argument('--training-mode', type=str, default='p2r')
-    parser.add_argument('--delta-L-mode', nargs='?', type=str, const='', default=None)
+    parser.add_argument('--delta-L-mode', nargs='?', type=str, const=None, default=None)
     parser.add_argument('--gt-ratios-per-scene', type=float, default=0.1)
     parser.add_argument('--single-scene', nargs='?', type=str, const='', default='')
     parser.add_argument('--pseudo', type=int, default=1, choices=[0, 1])
