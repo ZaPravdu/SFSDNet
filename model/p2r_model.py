@@ -55,7 +55,7 @@ class P2RModel(HyperModel):
             )
             scene_name = sub_ds.label[0]['scene_name']
             base_scene = scene_name.split('/')[0] if '/' in scene_name else scene_name
-            scene_totals[base_scene] += int(sub_ds.valid.sum().item())
+            scene_totals[base_scene] += len(sub_ds)
 
         ls = LabeledSet(ratio=self.gt_ratios_per_scene, scene_totals=scene_totals)
 
