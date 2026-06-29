@@ -401,6 +401,8 @@ class P2RModel(HyperModel):
         self.log('gt_in_out_loss', io_loss.item(), on_epoch=True, prog_bar=True, sync_dist=True)
         self.log(f'{mode}_loss', loss, on_epoch=True, prog_bar=True, sync_dist=True, on_step=True)
 
+        loss = self._add_reg(loss)
+
         if mode == 'val':
             self._log_val_metrics(pre_global, gt_global, pre_share, gt_share, pre_io, gt_io)
         return loss
@@ -434,9 +436,10 @@ class P2RModel(HyperModel):
         global_loss = self.criterion(pre_global * self.den_factor, pseudo_global * self.den_factor)
         share_loss = self.criterion(pre_share * self.den_factor, pseudo_share * self.den_factor)
         io_loss = self.criterion(pre_io * self.den_factor, pseudo_io * self.den_factor)
-        loss = self._add_reg((global_loss + 10 * share_loss + io_loss) / 3)
+        loss = (global_loss + 10 * share_loss + io_loss) / 3
 
         self.log('train_loss', loss, on_epoch=True, prog_bar=True, sync_dist=True)
+        loss = self._add_reg(loss)
 
         return loss
 
