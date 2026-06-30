@@ -177,6 +177,7 @@ class P2RModel(HyperModel):
 
     def calculate_loss(self, data, mode):
         sid = self._sample_id(data)
+        self._diag_sid = sid  # 供 diagnose log 读取
 
         # Per-scene labeled-sample budget tracking (only during training)
         if mode == 'train' and self.labeled_set is not None:
@@ -403,9 +404,13 @@ class P2RModel(HyperModel):
         io_loss = self.criterion(pre_io * self.den_factor, gt_io * self.den_factor)
         loss = (global_loss + 10 * share_loss + io_loss) / 3
 
-        # 记录输出密度图的 sum（供 diagnose log 读取）
+        # 记录诊断数据（供 diagnose log 读取）
         self._diag_pre_global_sum = pre_global.detach().sum().item()
         self._diag_gt_global_sum = gt_global.detach().sum().item()
+        self._diag_decoder_raw_sum = (pre_global * self.den_factor).detach().sum().item()
+        self._diag_gt_scaled_sum = (gt_global * self.den_factor).detach().sum().item()
+        self._diag_frame_people = [len(t['points']) for t in targets]
+        self._diag_frame_gt_sums = [gt_global[i].detach().sum().item() for i in range(len(gt_global))]
 
         self.log('gt_global_loss', global_loss.item(), on_epoch=True, prog_bar=True, sync_dist=True)
         self.log('gt_share_loss', share_loss.item(), on_epoch=True, prog_bar=True, sync_dist=True)

@@ -166,6 +166,30 @@ class DiagnoseLogger:
         if hasattr(model, '_diag_pre_global_sum'):
             batch_log["pre_global_sum"] = round(model._diag_pre_global_sum, 4)
             batch_log["gt_global_sum"] = round(model._diag_gt_global_sum, 4)
+            batch_log["decoder_raw_sum"] = round(model._diag_decoder_raw_sum, 4)
+            batch_log["gt_scaled_sum"] = round(model._diag_gt_scaled_sum, 4)
+            batch_log["decoder_vs_gt_ratio"] = round(
+                model._diag_decoder_raw_sum / model._diag_gt_scaled_sum, 4
+            ) if model._diag_gt_scaled_sum != 0 else None
+
+        # 每帧 GT 人数 vs 密度图 sum（验证高斯归一化）
+        if hasattr(model, '_diag_frame_people'):
+            batch_log["frame_people"] = model._diag_frame_people
+            batch_log["frame_gt_sums"] = [
+                round(v, 4) for v in model._diag_frame_gt_sums
+            ]
+            # 每帧的 dmap_sum/人数 比值
+            ratios = []
+            for n_ppl, dsum in zip(model._diag_frame_people, model._diag_frame_gt_sums):
+                if n_ppl > 0 and dsum > 0:
+                    ratios.append(round(dsum / n_ppl, 4))
+                else:
+                    ratios.append(None)
+            batch_log["frame_gt_ratio_ppl"] = ratios
+
+        # 当前 batch 的 SID
+        if hasattr(model, '_diag_sid'):
+            batch_log["sid"] = model._diag_sid
 
         self._epoch_data["batches"].append(batch_log)
 
@@ -189,6 +213,14 @@ class DiagnoseLogger:
                 self._epoch_data["lr"] = round(lr, 8)
             except (IndexError, KeyError, AttributeError):
                 pass
+
+            # labeled_set 快照（epoch 末状态）
+            if model.labeled_set is not None:
+                self._epoch_data["labeled_set_size"] = len(model.labeled_set._ids)
+                self._epoch_data["labeled_set_counts"] = dict(model.labeled_set._counts)
+                # 记录前 3 个 SID 作为样本
+                sid_sample = list(model.labeled_set._ids)[:3]
+                self._epoch_data["labeled_set_sids_sample"] = sid_sample
 
             self.data["per_epoch"].append(self._epoch_data)
         self._epoch_data = None
