@@ -83,9 +83,9 @@ class P2RModel(HyperModel):
     # ── Init helpers ──────────────────────────────────────────────
 
     def _setup_student_teacher(self):
-        self.student = Video_Counter(self.cfg, self.cfg_data)
+        self.student = Video_Counter(self.cfg, self.cfg_data).eval()
         if self.training_mode == 'p2r' and self.pseudo:
-            self.teacher = Video_Counter(self.cfg, self.cfg_data)
+            self.teacher = Video_Counter(self.cfg, self.cfg_data).eval()
             for p in self.teacher.parameters():
                 p.requires_grad = False
 

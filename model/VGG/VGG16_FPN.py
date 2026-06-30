@@ -15,8 +15,12 @@ class VGG16_FPN_Encoder(nn.Module):
 
         vgg = models.vgg16_bn(pretrained=True)
         features = list(vgg.features.children())
-
+        for i, layer in enumerate(features):
+            if isinstance(layer, nn.ReLU):
+                features[i] = nn.ReLU(inplace=False)  # 替换掉
+        # self.input_layer = nn.Sequential(features[0])
         self.layer1 = nn.Sequential(*features[0:23])
+        # self.layer1[-1]=nn.ReLU(inplace=False)
         self.layer2 = nn.Sequential(*features[23:33])
         self.layer3 = nn.Sequential(*features[33:43])
 
@@ -33,24 +37,29 @@ class VGG16_FPN_Encoder(nn.Module):
             nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1)
         )
     def forward(self, x):
-        f_list = []
-        # x1 = self.layer1(x)
-        x1 = checkpoint.checkpoint(self.layer1, x)
-        f_list.append(x1)
-        x2 = checkpoint.checkpoint(self.layer2, x1)
-        # x2 = self.layer2(x1)
-        f_list.append(x2)
-        x3 = checkpoint.checkpoint(self.layer3, x2)
-        # x3 = self.layer3(x2)
-        f_list.append(x3)
+        
 
+        def _fn(x):
+        # f_list=[]
+ 
+            x1 = self.layer1(x)
+            # x1 = checkpoint.checkpoint(self.layer1, x)
+            # f_list.append(x1)
+            # x2 = checkpoint.checkpoint(self.layer2, x1)
+            x2 = self.layer2(x1)
+            # f_list.append(x2)
+            # x3 = checkpoint.checkpoint(self.layer3, x2)
+            x3 = self.layer3(x2)
+            # f_list.append(x3)
+            return (x1,x2,x3)
+        f_list = checkpoint.checkpoint(_fn, x)
         fpn_f_list = self.neck2f(f_list)
         outputs = []
         outputs.append(F.interpolate(fpn_f_list[0], scale_factor=0.25, mode='bilinear', align_corners=True))
         outputs.append(F.interpolate(fpn_f_list[1], scale_factor=0.5, mode='bilinear', align_corners=True))
         outputs.append(fpn_f_list[2])
         multi_scale_f = torch.cat([outputs[0], outputs[1], outputs[2]], dim=1)
-        feature = self.feature_head(multi_scale_f)
+        feature = checkpoint.checkpoint(self.feature_head, multi_scale_f)
         outputs.append(feature)
         return outputs
     
