@@ -270,6 +270,8 @@ def main():
     else:
         trainer.fit(model, train_loader, test_loader)
 
+    model.diagnose.save()
+
 
 if __name__ == '__main__':
     main()

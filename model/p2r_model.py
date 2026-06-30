@@ -13,6 +13,7 @@ from model.gates import BaseGatedModule
 from model.labeled_set import LabeledSet
 from model.fisher import compute_fisher
 from types import SimpleNamespace
+from diagnose_logger import DiagnoseLogger
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -36,6 +37,11 @@ class P2RModel(HyperModel):
         self.criterion = nn.MSELoss()
         self.ema_momentum = 0.998
         self.den_factor = self.cfg_data.DEN_FACTOR
+
+        # ── Diagnose logger ─────────────────────────────────────────
+        self.diagnose = DiagnoseLogger()
+        self.diagnose.log_config(self)
+        self.diagnose.log_model_stats(self)
 
     def _build_labeled_set(self):
         """Build LabeledSet from train_loader scene totals and gt_ratios_per_scene."""
@@ -97,8 +103,7 @@ class P2RModel(HyperModel):
                         p.requires_grad = False
 
     def _load_pretrained_weights(self, weight_path):
-        if weight_path is None:
-            return
+
         state = torch.load(weight_path)
         new_state = {k[7:] if k.startswith('module.') else k: v for k, v in state.items()}
         self.student.load_state_dict(new_state, strict=True)
@@ -212,6 +217,7 @@ class P2RModel(HyperModel):
         print(f'  Trainable: {n_trainable}/{len(gates)}')
         assert n_trainable > 0, 'No trainable gate parameters — gates will never update!'
         self._validate_gt_sampling()
+        self.diagnose.log_data_info(self)
 
     def on_after_backward(self):
         # 无标签样本（pseudo=False）走 zero_loss，gate 不会有梯度，跳过断言
@@ -259,6 +265,7 @@ class P2RModel(HyperModel):
             self._compute_delta_L()
         self._assert_default_reg_coeff()
         self._validate_gt_sampling()
+        self.diagnose.on_epoch_start(self)
 
     def _assert_default_reg_coeff(self):
         """When delta_L_mode is None, all reg_coeff must be 1.0."""
@@ -396,6 +403,10 @@ class P2RModel(HyperModel):
         io_loss = self.criterion(pre_io * self.den_factor, gt_io * self.den_factor)
         loss = (global_loss + 10 * share_loss + io_loss) / 3
 
+        # 记录输出密度图的 sum（供 diagnose log 读取）
+        self._diag_pre_global_sum = pre_global.detach().sum().item()
+        self._diag_gt_global_sum = gt_global.detach().sum().item()
+
         self.log('gt_global_loss', global_loss.item(), on_epoch=True, prog_bar=True, sync_dist=True)
         self.log('gt_share_loss', share_loss.item(), on_epoch=True, prog_bar=True, sync_dist=True)
         self.log('gt_in_out_loss', io_loss.item(), on_epoch=True, prog_bar=True, sync_dist=True)
@@ -505,6 +516,13 @@ class P2RModel(HyperModel):
     def on_train_batch_end(self, outputs, batch, batch_idx):
         if self.pseudo and self.ST:
             self.ema_update()
+        self.diagnose.on_batch_end(self, batch_idx)
+
+    def on_train_epoch_end(self):
+        self.diagnose.on_epoch_end(self)
+
+    def on_validation_epoch_end(self):
+        self.diagnose.log_val_metrics(self)
 
     # ── Checkpoint ────────────────────────────────────────────────
 
