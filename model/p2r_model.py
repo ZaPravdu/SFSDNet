@@ -111,6 +111,8 @@ class P2RModel(HyperModel):
             self.teacher.load_state_dict(new_state, strict=True)
 
     def _inject_gates(self):
+        if not self.inject_gate:
+            return
         if self.reg_mode in ('l1', 'l2'):
             for name in ['share_decoder', 'global_decoder', 'in_out_decoder', 'Extractor', 'feature_fuse']:
                 add_gates_to_conv(getattr(self.student, name))
@@ -647,6 +649,7 @@ def _make_train_cfg(**overrides):
         delta_L_mode=None, use_variance_reg=False, gt_ratios_per_scene=0,
         freeze_backbone=True, freeze_feature_fuse=True, freeze_head=True,
         freeze_attention=True, pseudo=False, weight_path=None,
+        inject_gate=True,
     )
     for k, v in overrides.items():
         setattr(cfg, k, v)

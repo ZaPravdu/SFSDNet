@@ -42,7 +42,7 @@ import argparse
 _BOOL_FIELDS = [
     'shuffle', 'validate_mode', 'dens_recon', 'ST',
     'freeze_backbone', 'freeze_feature_fuse', 'freeze_head', 'freeze_attention',
-    'use_attention_gate', 'pseudo', 'use_variance_reg',
+    'use_attention_gate', 'pseudo', 'use_variance_reg', 'inject_gate',
 ]
 
 
@@ -89,6 +89,9 @@ def parse_args():
     parser.add_argument('--pseudo', type=int, default=1, choices=[0, 1])
     parser.add_argument('--gate-freeze-json', type=str, default=None)
     parser.add_argument('--use-variance-reg', type=int, default=0, choices=[0, 1])
+
+    # ── Gate 控制 ──
+    parser.add_argument('--inject-gate', type=int, default=1, choices=[0, 1])
 
     # ── 方差正则化（Stage 1） ──
     parser.add_argument('--source-scene-path', type=str, default=None)
@@ -202,10 +205,11 @@ def main():
         raw_model.load_state_dict(sd, strict=True)
         for p in raw_model.parameters():
             p.requires_grad = False
-        for name in ['share_decoder', 'global_decoder', 'in_out_decoder', 'Extractor', 'feature_fuse']:
-            add_gates_to_conv(getattr(raw_model, name))
-        if args.use_attention_gate:
-            add_gates_to_attention(raw_model)
+        if args.inject_gate:
+            for name in ['share_decoder', 'global_decoder', 'in_out_decoder', 'Extractor', 'feature_fuse']:
+                add_gates_to_conv(getattr(raw_model, name))
+            if args.use_attention_gate:
+                add_gates_to_attention(raw_model)
 
         from types import SimpleNamespace
         src_config = SimpleNamespace(
