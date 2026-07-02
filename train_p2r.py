@@ -199,7 +199,7 @@ def main():
         print(f'  Source scenes: {args.source_scene_path}')
         print('=' * 60)
 
-        raw_model = Video_Counter(cfg, cfg_data)
+        raw_model = Video_Counter(cfg, cfg_data).eval()
         sd = torch.load(args.weight_path, map_location='cpu')
         sd = {k[7:] if k.startswith('module.') else k: v for k, v in sd.items()}
         raw_model.load_state_dict(sd, strict=True)

@@ -37,6 +37,7 @@ class P2RModel(HyperModel):
         self.criterion = nn.MSELoss()
         self.ema_momentum = 0.998
         self.den_factor = self.cfg_data.DEN_FACTOR
+        self._reg_coeff_externally_set = False  # tracked for on_train_epoch_start guard
 
         # ── Diagnose logger ─────────────────────────────────────────
         self.diagnose = DiagnoseLogger()
@@ -46,6 +47,7 @@ class P2RModel(HyperModel):
     def _build_labeled_set(self):
         """Build LabeledSet from train_loader scene totals and gt_ratios_per_scene."""
         if self.gt_ratios_per_scene <= 0:
+            logger.debug('[P2RModel] gt_ratios_per_scene=%s <= 0, skipping LabeledSet', self.gt_ratios_per_scene)
             return None
         assert self.train_loader is not None, (
             "train_loader required when gt_ratios_per_scene > 0"
@@ -171,11 +173,9 @@ class P2RModel(HyperModel):
                 gates.get('v_gate_logit', [1.0] * parent_mod.num_heads),
             )
 
-    # ── Loss dispatch ─────────────────────────────────────────────
+        self._reg_coeff_externally_set = True
 
-    def _zero_loss(self):
-        """Return a zero loss tensor (skip parameter update for this sample)."""
-        return torch.tensor(0.0, requires_grad=True, device=self.device)
+    # ── Loss dispatch ─────────────────────────────────────────────
 
     def calculate_loss(self, data, mode):
         sid = self._sample_id(data)
@@ -191,9 +191,8 @@ class P2RModel(HyperModel):
         # ── Loss dispatch ───────────────────────────────────────────
         if mode == 'val':
             if has_gt:
-                loss = self._zero_loss()
-            else:
-                loss = self._supervised_loss((data[0], data[2]), mode)
+                return None  # prevent validation-data leakage via held-out GT samples
+            loss = self._supervised_loss((data[0], data[2]), mode)
 
         elif mode == 'train':
             if has_gt:
@@ -202,7 +201,7 @@ class P2RModel(HyperModel):
                 if self.pseudo:
                     loss = self._p2r_loss(data)
                 else:
-                    loss = self._zero_loss()
+                    return None  # unlabeled sample in supervised mode — skip update
 
         else:
             raise ValueError(f"Unknown mode '{mode}'")
@@ -211,26 +210,31 @@ class P2RModel(HyperModel):
 
     def on_train_start(self):
         """Log all gate parameters and confirm at least one is trainable."""
-        gates = [(n, p) for n, p in self.student.named_parameters()
-                 if 'gate' in n or 'gate_logit' in n]
-        print(f'[P2RModel] Gate parameters ({len(gates)} total):')
-        for name, p in gates:
-            print(f'  {name}: requires_grad={p.requires_grad}, shape={list(p.shape)}')
-        n_trainable = sum(1 for _, p in gates if p.requires_grad)
-        print(f'  Trainable: {n_trainable}/{len(gates)}')
-        assert n_trainable > 0, 'No trainable gate parameters — gates will never update!'
+        if self.inject_gate:
+            gates = [(n, p) for n, p in self.student.named_parameters()
+                     if 'gate' in n or 'gate_logit' in n]
+            print(f'[P2RModel] Gate parameters ({len(gates)} total):')
+            for name, p in gates:
+                print(f'  {name}: requires_grad={p.requires_grad}, shape={list(p.shape)}')
+            n_trainable = sum(1 for _, p in gates if p.requires_grad)
+            print(f'  Trainable: {n_trainable}/{len(gates)}')
+            assert n_trainable > 0, 'No trainable gate parameters — gates will never update!'
         self._validate_gt_sampling()
         self.diagnose.log_data_info(self)
 
     def on_after_backward(self):
-        # 无标签样本（pseudo=False）走 zero_loss，gate 不会有梯度，跳过断言
-        if self.pseudo:
-            for name, p in self.student.named_parameters():
-                if name.endswith('.gate') or name.endswith('_gate_logit'):
-                    assert p.grad is not None, (
-                        f"Gate '{name}' has None gradient after backward — "
-                        f"not connected to computation graph"
-                    )
+        """Assert all gate parameters received gradients from the backward pass.
+
+        This hook only fires for batches that returned a real loss from
+        training_step (batches that returned None skip backward entirely),
+        so every trainable gate must have a non-None gradient.
+        """
+        for name, p in self.student.named_parameters():
+            if name.endswith('.gate') or name.endswith('_gate_logit'):
+                assert p.grad is not None, (
+                    f"Gate '{name}' has None gradient after backward — "
+                    f"not connected to computation graph"
+                )
 
 
     def ema_update(self):
@@ -266,14 +270,19 @@ class P2RModel(HyperModel):
     def on_train_epoch_start(self):
         if self.delta_L_mode is not None:
             self._compute_delta_L()
-        self._assert_default_reg_coeff()
+        elif self._reg_coeff_externally_set:
+            pass  # coefficients from external injection (e.g. variance reg), trust them
+        else:
+            self._assert_default_reg_coeff()
         self._validate_gt_sampling()
         self.diagnose.on_epoch_start(self)
 
     def _assert_default_reg_coeff(self):
-        """When delta_L_mode is None, all reg_coeff must be 1.0."""
-        if self.delta_L_mode:
-            return
+        """Assert all reg_coeff are 1.0.
+
+        Must only be called when no coefficient source is active
+        (caller — on_train_epoch_start — guarantees this via its if/elif/else chain).
+        """
         for mod in self.student.modules():
             if not isinstance(mod, BaseGatedModule):
                 continue
@@ -310,6 +319,8 @@ class P2RModel(HyperModel):
 
     def _compute_delta_L(self):
         """Iterate labeled samples, compute correct per-pixel-MSE Fisher → set reg_coeff."""
+        if not self.inject_gate:
+            return
         self.student.eval()
         print('[P2RModel] Computing delta-L regularization')
 
@@ -325,6 +336,7 @@ class P2RModel(HyperModel):
                 sid = self._sample_id(batch)
                 self.labeled_set.add(sid)
                 if sid not in self.labeled_set:
+                    logger.debug('[P2RModel] Delta-L: skip sample %s (not in labeled set)', sid)
                     return None
 
             processed += 1
@@ -698,8 +710,8 @@ class TestCalculateLoss:
     mode      | has_gt (= in labeled_set) | pseudo=❓ → action
     train     | True                      | any        → _supervised_loss
     train     | False                     | True       → _p2r_loss
-    train     | False                     | False      → zero_loss
-    val       | True                      | any        → zero_loss (skip, prevent leakage)
+    train     | False                     | False      → None (skip update)
+    val       | True                      | any        → None (skip, prevent leakage)
     val       | False                     | any        → _supervised_loss
     ─────────────────────────────────────────────────────
 
@@ -765,8 +777,8 @@ class TestCalculateLoss:
         model._supervised_loss.assert_not_called()
         assert loss.item() == 20.0
 
-    def test_train_unlabeled_no_pseudo_returns_zero(self, model, data):
-        """Train + no_gt + no pseudo → zero_loss (skip update)"""
+    def test_train_unlabeled_no_pseudo_returns_none(self, model, data):
+        """Train + no_gt + no pseudo → None (skip update)"""
         model.labeled_set = None
         model.pseudo = False
 
@@ -774,13 +786,12 @@ class TestCalculateLoss:
 
         model._supervised_loss.assert_not_called()
         model._p2r_loss.assert_not_called()
-        assert loss.item() == 0.0
-        assert loss.requires_grad
+        assert loss is None
 
     # ── Validation mode ───────────────────────────────────────────
 
-    def test_val_labeled_returns_zero(self, model, data):
-        """Val + has_gt → zero_loss (prevent test leakage)"""
+    def test_val_labeled_returns_none(self, model, data):
+        """Val + has_gt → None (prevent test leakage)"""
         model.labeled_set = MagicMock()
         model.labeled_set.__contains__.return_value = True
 
@@ -788,7 +799,7 @@ class TestCalculateLoss:
 
         model._supervised_loss.assert_not_called()
         model._p2r_loss.assert_not_called()
-        assert loss.item() == 0.0
+        assert loss is None
 
     def test_val_unlabeled_calls_supervised_loss(self, model, data):
         """Val + no_gt → _supervised_loss"""
@@ -849,7 +860,7 @@ class TestCalculateLoss:
 
         loss = model.calculate_loss(data, 'train')
 
-        assert loss.item() == 0.0
+        assert loss is None
         model._supervised_loss.assert_not_called()
         model._p2r_loss.assert_not_called()
 
