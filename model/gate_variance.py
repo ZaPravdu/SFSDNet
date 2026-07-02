@@ -82,9 +82,10 @@ def collect_per_scene_gates(
                 weak_imgs = weak_imgs.to(device)
 
                 out = student_model(weak_imgs, targets)
-                pred = torch.cat([out[0], out[2], out[4]], dim=1)
-                target = torch.cat([out[1], out[3], out[5]], dim=1).detach()
-                loss = criterion(pred * den_factor, target * den_factor)
+                global_loss = criterion(out[0] * den_factor, out[1].detach() * den_factor)
+                share_loss = criterion(out[2] * den_factor, out[3].detach() * den_factor)
+                io_loss = criterion(out[4] * den_factor, out[5].detach() * den_factor)
+                loss = (global_loss + 10 * share_loss + io_loss) / 3
 
                 optimizer.zero_grad()
                 loss.backward()
