@@ -476,6 +476,8 @@ class P2RModel(HyperModel):
     # ── Regularization ────────────────────────────────────────────
 
     def _add_reg(self, loss):
+        if not self.inject_gate:
+            return loss
         if self.reg_mode == 'l2':
             reg = self.compute_l2_regularization()
             self.log_dict({'l2': reg.item()})
