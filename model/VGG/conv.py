@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -98,5 +97,3 @@ def build_conv_layer(cfg, *args, **kwargs):
     layer = conv_layer(*args, **kwargs, **cfg_)
 
     return layer
-
-
