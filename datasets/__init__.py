@@ -18,6 +18,9 @@ from torch.utils.data import RandomSampler
 from config import  cfg
 from PIL import Image
 import random
+import logging
+
+logger = logging.getLogger(__name__)
 from torch.utils.data.distributed import DistributedSampler
 class train_pair_transform(object):
     def __init__(self, cfg_data, check_dim = True):
@@ -304,8 +307,9 @@ def createValTestData(datasetname, Dataset, cfg_data, frame_interval, skip_flag,
             data_loader.append([scene_name, sub_loader])
         return data_loader
 
-    else:
-        return None
+        else:
+            logger.warning("Unknown dataset '%s' in loading_data, returning None — no data loader created", datasetname)
+            return None
     
 def loading_testset(datasetname, test_interval, skip_flag, mode='test'):
     if datasetname != "MovingDroneCrowd":

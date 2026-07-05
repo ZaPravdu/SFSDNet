@@ -21,3 +21,23 @@ __pycache__/
 CLAUDE.md
 .idea/
 
+datasets/__pycache__/__init__.cpython-311.pyc
+datasets/__pycache__/dataset.cpython-311.pyc
+datasets/__pycache__/samplers.cpython-311.pyc
+datasets/setting/__pycache__/__init__.cpython-311.pyc
+datasets/setting/__pycache__/HT21.cpython-311.pyc
+datasets/setting/__pycache__/MovingDroneCrowd.cpython-311.pyc
+datasets/setting/__pycache__/SENSE.cpython-311.pyc
+misc/__pycache__/dot_ops.cpython-311.pyc
+misc/__pycache__/inflation.cpython-311.pyc
+misc/__pycache__/layer.cpython-311.pyc
+misc/__pycache__/transforms.cpython-311.pyc
+misc/__pycache__/utils.cpython-311.pyc
+model/ResNet/__pycache__/conv.cpython-311.pyc
+model/ResNet/__pycache__/ResNet50_FPN.cpython-311.pyc
+model/necks/__pycache__/__init__.cpython-311.pyc
+model/necks/__pycache__/fpn.cpython-311.pyc
+model/VGG/__pycache__/conv.cpython-311.pyc
+model/VGG/__pycache__/ResNet50_FPN.cpython-311.pyc
+model/VGG/__pycache__/VGG16_FPN.cpython-311.pyc
+model/ViT/__pycache__/models_crossvit.cpython-311.pyc
