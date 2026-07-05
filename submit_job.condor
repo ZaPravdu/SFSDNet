@@ -28,21 +28,32 @@ when_to_transfer_output = ON_EXIT
 # ── 参数传递 ──
 # 修改下方变量值后 condor_submit submit_job.condor 即可
 # condor_submit 不支持命令行覆盖变量，改这里
-LR = 0.0001
+LR = 0.01
 REG_MODE = l2
 MAX_EPOCHS = 5
 BATCH_SIZE = 8
+
 PSEUDO = 1
 VALIDATE = 0
 GT_RATIO = 0.0
-BETA = 1.0
-SINGLE_SCENE =
-DELTA_L_MODE =
-# 方差正则化（两阶段训练，默认关闭）
+SINGLE_SCENE = scene_25
+
+
+# reg
 USE_VARIANCE_REG = 0
 SCENE_FINETUNE_EPOCHS = 1
+DELTA_L_MODE = 
+BETA = 0
 
-arguments = --lr $(LR) --reg-mode $(REG_MODE) --max-epochs $(MAX_EPOCHS) --batch-size $(BATCH_SIZE) --pseudo $(PSEUDO) --validate-mode $(VALIDATE) --gt-ratios-per-scene $(GT_RATIO) --beta $(BETA) --single-scene $(SINGLE_SCENE) --delta-L-mode $(DELTA_L_MODE) --use-variance-reg $(USE_VARIANCE_REG) --scene-finetune-epochs $(SCENE_FINETUNE_EPOCHS)
+# gates and source model
+USE_ATTENTION_GATE = 0
+FREEZE_BACKBONE = 1
+FREEZE_HEAD = 0
+FREEZE_FEATURE_FUSE = 1
+FREEZE_ATTENTION = 1
+INJECT_GATE = 0
+
+arguments = --lr $(LR) --reg-mode $(REG_MODE) --max-epochs $(MAX_EPOCHS) --batch-size $(BATCH_SIZE) --pseudo $(PSEUDO) --validate-mode $(VALIDATE) --gt-ratios-per-scene $(GT_RATIO) --beta $(BETA) --single-scene $(SINGLE_SCENE) --delta-L-mode $(DELTA_L_MODE) --use-variance-reg $(USE_VARIANCE_REG) --scene-finetune-epochs $(SCENE_FINETUNE_EPOCHS) --use-attention-gate $(USE_ATTENTION_GATE) --freeze-backbone $(FREEZE_BACKBONE) --freeze-head $(FREEZE_HEAD) --inject-gate $(INJECT_GATE) --freeze-feature-fuse $(FREEZE_FEATURE_FUSE) --freeze-attention $(FREEZE_ATTENTION)
 
 # 提交作业
 queue

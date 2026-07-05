@@ -83,7 +83,7 @@ def parse_args():
     parser.add_argument('--beta', type=float, default=1.0)
     parser.add_argument('--use-attention-gate', type=int, default=1, choices=[0, 1])
     parser.add_argument('--training-mode', type=str, default='p2r', choices=['p2r', 'supervised'])
-    parser.add_argument('--delta-L-mode', nargs='?', type=str, const='exp', default=None, choices=['exp', 'original', 'inv'])
+    parser.add_argument('--delta-L-mode', nargs='?', type=str, const=None, default=None, choices=['exp', 'original', 'inv'])
     parser.add_argument('--gt-ratios-per-scene', type=float, default=0.0)
     parser.add_argument('--single-scene', nargs='?', type=str, const='scene_25', default=None)
     parser.add_argument('--pseudo', type=int, default=1, choices=[0, 1])
@@ -216,7 +216,7 @@ def main():
             scene_path=args.source_scene_path,
             dataset_path=args.dataset_path,
             data_mode=args.data_mode,
-            shuffle=False,
+            shuffle=True,
         )
         per_scene_loaders = get_per_scene_loaders(
             src_config, P2RDataset, cfg_data, training=True)

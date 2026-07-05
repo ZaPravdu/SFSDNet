@@ -37,11 +37,9 @@ class VGG16_FPN_Encoder(nn.Module):
             nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1)
         )
     def forward(self, x):
-        
-
         def _fn(x):
-        # f_list=[]
- 
+    # f_list=[]
+
             x1 = self.layer1(x)
             # x1 = checkpoint.checkpoint(self.layer1, x)
             # f_list.append(x1)
@@ -50,7 +48,7 @@ class VGG16_FPN_Encoder(nn.Module):
             # f_list.append(x2)
             # x3 = checkpoint.checkpoint(self.layer3, x2)
             x3 = self.layer3(x2)
-            # f_list.append(x3)
+        # f_list.append(x3)
             return (x1,x2,x3)
         f_list = checkpoint.checkpoint(_fn, x)
         fpn_f_list = self.neck2f(f_list)
@@ -59,7 +57,8 @@ class VGG16_FPN_Encoder(nn.Module):
         outputs.append(F.interpolate(fpn_f_list[1], scale_factor=0.5, mode='bilinear', align_corners=True))
         outputs.append(fpn_f_list[2])
         multi_scale_f = torch.cat([outputs[0], outputs[1], outputs[2]], dim=1)
-        feature = checkpoint.checkpoint(self.feature_head, multi_scale_f)
+        # feature = checkpoint.checkpoint(self.feature_head, multi_scale_f)
+        feature = self.feature_head(multi_scale_f)
         outputs.append(feature)
         return outputs
     
