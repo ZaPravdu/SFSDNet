@@ -10,18 +10,18 @@ conv_cfg = {
 class BasicDeconv(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, activate=None):
         super(BasicDeconv, self).__init__()
-        bias = False if activate == 'bn' else True
-        self.tconv = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride=stride, padding=0, bias=not self.use_bn)
+        use_bn = activate == 'bn'
+        self.tconv = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride=stride, padding=0, bias=not use_bn)
         if activate == 'bn':
             self.bn = nn.BatchNorm2d(out_channels)
         elif activate == 'in':
             self.bn = nn.InstanceNorm2d(out_channels)
-        elif activate == None:
+        elif activate is None:
             self.bn = None
     def forward(self, x):
-        # pdb.set_trace()
         x = self.tconv(x)
-        x = self.bn(x)
+        if self.bn is not None:
+            x = self.bn(x)
         return F.relu(x, inplace=True)
 
 
@@ -36,7 +36,7 @@ class BasicConv(nn.Module):
             self.norm = nn.BatchNorm2d(out_channels,eps=1e-05, momentum=0.01)
         elif norm == 'in':
             self.norm = nn.InstanceNorm2d(out_channels)
-        elif norm == None:
+        elif norm is None:
             self.norm = None
 
 

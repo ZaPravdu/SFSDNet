@@ -97,6 +97,9 @@ def parse_args():
     parser.add_argument('--source-scene-path', type=str, default=None)
     parser.add_argument('--scene-finetune-epochs', type=int, default=1)
 
+    # ── 模型选择 ──
+    parser.add_argument('--model', type=str, default='SDNet', choices=['SDNet', 'DRNet'])
+
     # ── 路径/模式 ──
     parser.add_argument('--validate-mode', type=int, default=0, choices=[0, 1])
     parser.add_argument('--weight-path', type=str, default=None)
@@ -186,6 +189,21 @@ def main():
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
+    # P2R 训练需要 SDNet 架构（默认为 GD3A，缺少 decoders / cross-attention 组件）
+    cfg.MODEL = args.model
+    if args.model == 'DRNet':
+        if args.training_mode == 'p2r':
+            print('[DRNet] Forcing training_mode=supervised (DRNet does not support P2R)')
+            args.training_mode = 'supervised'
+        if args.pseudo:
+            args.pseudo = False
+        args.freeze_backbone = False
+        args.freeze_feature_fuse = False
+        args.freeze_head = False
+        args.freeze_attention = False
+        if args.lr == 1e-4:
+            args.lr = 5e-5
+
     # ── 数据集配置 ──
     datasetting = import_module(f'datasets.setting.{args.data_mode}')
     cfg_data = datasetting.cfg_data
@@ -247,7 +265,7 @@ def main():
     test_loader, _ = get_testset(args, P2RDataset, cfg_data)
 
     fast_dev_run, wandb_logger = get_logger(args)
-    model = model_assembler.P2RModel(
+    model = model_assembler.get_model(
         cfg=cfg, cfg_data=cfg_data,
         train_cfg=args, train_loader=train_loader,
     )

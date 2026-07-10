@@ -34,6 +34,10 @@ __C.cross_attn_num_heads = 4
 __C.mlp_ratio = 4
 __C.cross_attn_depth = 2
 
+# [DRNet] fields — used when cfg.MODEL == 'DRNet'
+__C.NET = 'VGG16_FPN'     # DRNet backbone selector
+__C.LR_DECAY = 0.95       # exponential LR decay factor
+
 # for both
 __C.FEATURE_DIM = 256
 __C.LR_Base = 5e-5  # learning rate

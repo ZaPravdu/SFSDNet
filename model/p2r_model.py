@@ -30,6 +30,16 @@ class P2RModel(HyperModel):
         self.train_loader = train_loader
         self.cfg_data = cfg_data
         self.cfg = cfg
+        # P2RModel 专为 SDNet 设计。非 SDNet 模型（如 DRNet）应使用
+        # model_assembler.get_model() 工厂，该工厂返回对应的 LightningModule。
+        if cfg.MODEL != 'SDNet':
+            logger.warning(
+                "P2RModel created with cfg.MODEL='%s'. "
+                "This class is designed for SDNet; SDNet-specific methods "
+                "(_setup_student_teacher, _inject_gates, _p2r_loss, etc.) "
+                "will fail. Use model_assembler.get_model() instead.",
+                cfg.MODEL,
+            )
         self.labeled_set = self._build_labeled_set()
         self._setup_student_teacher()
         self._load_pretrained_weights(self.weight_path)

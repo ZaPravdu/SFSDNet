@@ -307,9 +307,9 @@ def createValTestData(datasetname, Dataset, cfg_data, frame_interval, skip_flag,
             data_loader.append([scene_name, sub_loader])
         return data_loader
 
-        else:
-            logger.warning("Unknown dataset '%s' in loading_data, returning None — no data loader created", datasetname)
-            return None
+    logger.warning(
+        "createValTestData called with is_main=False — no loader created")
+    return None
     
 def loading_testset(datasetname, test_interval, skip_flag, mode='test'):
     if datasetname != "MovingDroneCrowd":

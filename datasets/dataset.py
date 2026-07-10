@@ -318,14 +318,15 @@ def MDC_ImgPath_and_Target(base_path, scene_name):
         boxes = data[:, 1:5].float()
 
         points = torch.zeros((len(boxes), 2))
-        points[:, 0] = (boxes[:, 0] + boxes[:, 2] / 2) 
-        points[:, 1] = (boxes[:, 1] + boxes[:, 3] / 2) 
+        points[:, 0] = (boxes[:, 0] + boxes[:, 2] / 2)
+        points[:, 1] = (boxes[:, 1] + boxes[:, 3] / 2)
 
         ids = (data[:, 0]).long()
+        sigma = torch.min(boxes[:, 2:4], 1)[0] / 2.0
 
         img_path.append(single_path)
 
-        labels.append({'scene_name':scene_name,'frame':int(img_id.split('.')[0]), 'person_id':ids, 'points':points})
+        labels.append({'scene_name':scene_name,'frame':int(img_id.split('.')[0]), 'person_id':ids, 'points':points, 'sigma':sigma})
     return img_path, labels
 
 

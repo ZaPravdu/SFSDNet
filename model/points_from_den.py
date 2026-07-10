@@ -99,7 +99,7 @@ def local_maximum_points(sub_pre, gaussian_maximun,radius=8.):
     sub_pre = sub_pre.detach()
     _,_,h,w = sub_pre.size()
     kernel = torch.ones(3,3)/9.
-    kernel =kernel.unsqueeze(0).unsqueeze(0).cuda()
+    kernel = kernel.unsqueeze(0).unsqueeze(0).to(sub_pre)
     weight = nn.Parameter(data=kernel, requires_grad=False)
     sub_pre = F.conv2d(sub_pre, weight, stride=1, padding=1)
 
