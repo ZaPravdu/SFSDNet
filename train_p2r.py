@@ -129,7 +129,10 @@ def _resolve_default_paths(args):
     else:
         raise ValueError(f'Unknown data_mode: {args.data_mode}')
     if args.weight_path is None:
-        args.weight_path = f'{base}/sdnet.pth'
+        if getattr(args, 'model', 'SDNet') == 'DRNet':
+            args.weight_path = f'{base}/HT21.pth'
+        else:
+            args.weight_path = f'{base}/sdnet.pth'
 
 
 def _compute_experiment_name(args):
