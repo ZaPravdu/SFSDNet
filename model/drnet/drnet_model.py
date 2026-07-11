@@ -46,9 +46,11 @@ class DRNetModel(LightningModule):
             f'got {train_cfg.training_mode}')
 
         self.__dict__.update(vars(train_cfg))
+        self.train_loader = train_loader
         self.cfg = cfg
         self.cfg_data = cfg_data
         self.den_factor = cfg_data.DEN_FACTOR
+        self.labeled_set = None
 
         # ── Core model ─────────────────────────────────────────────
         self.student = Video_Individual_Counter(cfg, cfg_data)
@@ -133,6 +135,15 @@ class DRNetModel(LightningModule):
             'train/kpi_den': kpi['den'], 'train/kpi_match': kpi['match'],
             'train/reg': reg,
         }, on_step=True, on_epoch=True, sync_dist=True)
+
+        # ── 记录诊断数据（供 diagnose log 读取）──
+        self._diag_pre_global_sum = pre_map.detach().sum().item()
+        self._diag_gt_global_sum = gt_den.detach().sum().item()
+        self._diag_decoder_raw_sum = (pre_map.detach() * self.den_factor).sum().item()
+        self._diag_gt_scaled_sum = (gt_den.detach() * self.den_factor).sum().item()
+        self._diag_frame_people = [len(t['points']) for t in targets]
+        self._diag_frame_gt_sums = [gt_den[i].detach().sum().item() for i in range(len(gt_den))]
+
         return total_loss
 
     def _compute_reg(self):
@@ -141,6 +152,28 @@ class DRNetModel(LightningModule):
             if isinstance(m, nn.Conv2d) and hasattr(m, 'l2_regularization'):
                 total = total + getattr(m, 'l2_regularization', lambda: 0.)()
         return total
+
+    # ── Diagnose hooks ────────────────────────────────────────────────
+
+    def on_train_start(self):
+        """Log dataset info at start."""
+        self.diagnose.log_data_info(self)
+
+    def on_train_epoch_start(self):
+        """Snapshot gate values at epoch start."""
+        self.diagnose.on_epoch_start(self)
+
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        """Record batch-level diagnostics."""
+        self.diagnose.on_batch_end(self, batch_idx)
+
+    def on_train_epoch_end(self):
+        """Finalise epoch-level diagnostics."""
+        self.diagnose.on_epoch_end(self)
+
+    def on_validation_epoch_end(self):
+        """Record validation metrics."""
+        self.diagnose.log_val_metrics(self)
 
     # ── Validation ──────────────────────────────────────────────────
 
