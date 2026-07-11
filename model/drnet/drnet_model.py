@@ -80,7 +80,9 @@ class DRNetModel(LightningModule):
             logger.warning('No weight_path — training from scratch')
             return
         state = torch.load(path, map_location='cpu')
-        state = {k[7:] if k.startswith('module.') else k: v
+        # SenseCrowd/HT21 权重来自原始 DRNet，Extractor 内部包了 DataParallel
+        # 导致 key 为 Extractor.module.xxx，模型期望的是 Extractor.xxx
+        state = {k.replace('Extractor.module.', 'Extractor.'): v
                  for k, v in state.items()}
         self.student.load_state_dict(state, strict=True)
         logger.info('Loaded pretrained weights from %s', path)
