@@ -3,7 +3,7 @@ from copy import deepcopy
 import torch.nn as nn
 import torch.nn.functional as F
 from model.dustbin_score_predictor import DustbinScorePredictor
-def MLP(channels: list[int], do_bn: bool = True) -> nn.Module:
+def MLP(channels, do_bn) -> nn.Module:
     """ Multi-layer perceptron """
     n = len(channels)
     layers = []
@@ -29,7 +29,7 @@ def normalize_keypoints(kpts, image_shape):
 
 class KeypointEncoder(nn.Module):
     """ Joint encoding of visual appearance and location using MLPs"""
-    def __init__(self, feature_dim: int, layers: list[int]) -> None:
+    def __init__(self, feature_dim, layers):
         super().__init__()
         self.encoder = MLP([2] + layers + [feature_dim])
         nn.init.constant_(self.encoder[-1].bias, 0.0)
@@ -38,7 +38,7 @@ class KeypointEncoder(nn.Module):
         inputs = kpts.transpose(1, 2)
         return self.encoder(inputs)
 
-def attention(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor) -> tuple[torch.Tensor,torch.Tensor]:
+def attention(query, key, value):
     dim = query.shape[1]
     scores = torch.einsum('bdhn,bdhm->bhnm', query, key) / dim**.5
     prob = torch.nn.functional.softmax(scores, dim=-1)
@@ -47,7 +47,7 @@ def attention(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor) -> tu
 
 class MultiHeadedAttention(nn.Module):
     """ Multi-head attention to increase model expressivitiy """
-    def __init__(self, num_heads: int, d_model: int):
+    def __init__(self, num_heads, d_model):
         super().__init__()
         assert d_model % num_heads == 0
         self.dim = d_model // num_heads
@@ -55,7 +55,7 @@ class MultiHeadedAttention(nn.Module):
         self.merge = nn.Conv1d(d_model, d_model, kernel_size=1)
         self.proj = nn.ModuleList([deepcopy(self.merge) for _ in range(3)])
 
-    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+    def forward(self, query, key, value) -> torch.Tensor:
         batch_dim = query.size(0)
         query, key, value = [l(x).view(batch_dim, self.dim, self.num_heads, -1)
                              for l, x in zip(self.proj, (query, key, value))]
@@ -64,26 +64,26 @@ class MultiHeadedAttention(nn.Module):
 
 
 class AttentionalPropagation(nn.Module):
-    def __init__(self, feature_dim: int, num_heads: int):
+    def __init__(self, feature_dim, num_heads):
         super().__init__()
         self.attn = MultiHeadedAttention(num_heads, feature_dim)
         self.mlp = MLP([feature_dim*2, feature_dim*2, feature_dim])
         nn.init.constant_(self.mlp[-1].bias, 0.0)
 
-    def forward(self, x: torch.Tensor, source: torch.Tensor) -> torch.Tensor:
+    def forward(self, x, source):
         message = self.attn(x, source, source)
         return self.mlp(torch.cat([x, message], dim=1))
 
 
 class AttentionalGNN(nn.Module):
-    def __init__(self, feature_dim: int, layer_names: list[str]) -> None:
+    def __init__(self, feature_dim, layer_names) :
         super().__init__()
         self.layers = nn.ModuleList([
             AttentionalPropagation(feature_dim, 4)
             for _ in range(len(layer_names))])
         self.names = layer_names
 
-    def forward(self, desc0: torch.Tensor, desc1: torch.Tensor) -> tuple[torch.Tensor,torch.Tensor]:
+    def forward(self, desc0, desc1):
         for layer, name in zip(self.layers, self.names):
             if name == 'cross':
                 src0, src1 = desc1, desc0
@@ -206,7 +206,7 @@ def compute_cost_matrix(P1, P2, F1, F2):
 
     return C
 
-def log_sinkhorn_iterations(Z, log_mu, log_nu, iters: int):
+def log_sinkhorn_iterations(Z, log_mu, log_nu, iters):
     """ Perform Sinkhorn Normalization in Log-space for stability"""
 
     log_u, log_v = torch.zeros_like(log_mu), torch.zeros_like(log_nu) # initialized with the u,v=1, the log(u)=0, log(v)=0
@@ -217,7 +217,7 @@ def log_sinkhorn_iterations(Z, log_mu, log_nu, iters: int):
     return Z + log_u.unsqueeze(2) + log_v.unsqueeze(1)
 
 
-def log_optimal_transport(scores, alpha, iters: int):
+def log_optimal_transport(scores, alpha, iters):
     """ Perform Differentiable Optimal Transport in Log-space for stability"""
     b, m, n = scores.shape
     one = scores.new_tensor(1)
@@ -240,5 +240,5 @@ def log_optimal_transport(scores, alpha, iters: int):
     return score
 
 
-def arange_like(x, dim: int):
+def arange_like(x, dim):
     return x.new_ones(x.shape[dim]).cumsum(0) - 1  # traceable in 1.1

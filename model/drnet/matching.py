@@ -21,24 +21,24 @@ class get_ROI_and_MatchInfo:
         Ratio between feature-map spatial size and input spatial size
         (e.g. 1/4 for DRNet's 256-dim descriptors).
     """
-    def __init__(self, train_size: tuple[int, int],
-                 radius: int = 8, feature_scale: float = 0.25):
+    def __init__(self, train_size,
+                 radius, feature_scale):
         assert len(train_size) == 2
         assert radius > 0
         self.h, self.w = train_size
         self.radius = radius
         self.feature_scale = feature_scale
 
-    def __call__(self, target_a: dict, target_b: dict,
-                 noise: str | None = None,
-                 shape: tuple[int, int] | None = None):
+    def __call__(self, target_a, target_b,
+                 noise ,
+                 shape = None ):
         """Build ROIs and match GT for a frame pair.
 
         Parameters
         ----------
         target_a, target_b : dict
             Each must have ``points`` (Nx2) and ``person_id`` (N).
-        noise : str | None
+        noise  | None
             ``'ab'`` — add Gaussian noise (sigma=2) to both frames.
             ``'a'`` — noise only frame A (sigma=1).
             ``'b'`` — noise only frame B (sigma=1).
