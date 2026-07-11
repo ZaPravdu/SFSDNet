@@ -123,14 +123,14 @@ def _resolve_default_paths(args):
             args.source_scene_path = f'{base}/MovingDroneCrowd/train.txt'
     elif args.data_mode.upper() == 'HT21':
         args.dataset_path = f'{base}/HT21'
-        args.scene_path = f'{base}/HT21/test.txt'
+        args.scene_path = f'{base}/HT21/train.txt'
         if args.source_scene_path is None:
             args.source_scene_path = f'{base}/HT21/train.txt'
     else:
         raise ValueError(f'Unknown data_mode: {args.data_mode}')
     if args.weight_path is None:
         if getattr(args, 'model', 'SDNet') == 'DRNet':
-            args.weight_path = f'{base}/HT21.pth'
+            args.weight_path = f'{base}/SenseCrowd.pth'
         else:
             args.weight_path = f'{base}/sdnet.pth'
 
