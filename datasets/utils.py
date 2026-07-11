@@ -56,6 +56,8 @@ def get_testset(config, Dataset, cfg_data, training=False):
     # e.g. 'train/HT21-01', no frames/ dir, no sub-clip expansion
     fullset = []
     for scene in scene_names:
+        kwargs = dict(gt_ratio=getattr(config, 'gt_ratios_per_scene', 0.0)) \
+            if Dataset == datasets.dataset.P2RDataset else {}
         sub_dataset = Dataset(scene_name=scene,
                                   base_path=config.dataset_path,
                                   main_transform=main_transform,
@@ -64,7 +66,8 @@ def get_testset(config, Dataset, cfg_data, training=False):
                                   skip_flag=False,
                                   target=True,
                                   datasetname=datasetname,
-                                  training=training)
+                                  training=training,
+                                  **kwargs)
         fullset.append(sub_dataset)
     test_dataset = torch.utils.data.ConcatDataset(fullset)
     

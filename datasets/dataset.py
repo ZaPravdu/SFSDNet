@@ -485,13 +485,23 @@ class GaussianBlur(object):
 
 class P2RDataset(TestDataset):
     """P2R dataset with strong augmentation for teacher-student training."""
-    def __init__(self, scene_name, base_path, main_transform=None, img_transform=None, interval=1, skip_flag=True, target=True, datasetname='Empty', training=True):
+    def __init__(self, scene_name, base_path, main_transform=None, img_transform=None, interval=1, skip_flag=True, target=True, datasetname='Empty', training=True, gt_ratio=0.0):
         super().__init__(scene_name, base_path, main_transform, img_transform, interval, skip_flag, target, datasetname, training)
+        self.gt_ratio = gt_ratio
+        self.gt_flags = self._build_gt_flags()
         self.strong_aug = transforms.Compose([
             transforms.RandomApply([transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
             transforms.RandomGrayscale(p=0.25),
             transforms.RandomApply([GaussianBlur([.1, 2.])], p=0.8),
         ])
+
+    def _build_gt_flags(self):
+        """Compute per-frame-pair GT flags — uniform sampling at gt_ratio."""
+        n_pairs = len(self)
+        if self.gt_ratio <= 0:
+            return [False] * n_pairs
+        step = max(1, int(1 / self.gt_ratio))
+        return [i % step == 0 for i in range(n_pairs)]
 
     def __getitem__(self, index):
         assert self.valid[index], f"[P2RDataset] Invalid index {index} — frame may be missing or out of range"
@@ -520,8 +530,8 @@ class P2RDataset(TestDataset):
                 share_mask0 = torch.logical_not(outflow_mask)
                 share_mask1 = torch.logical_not(inflow_mask)
 
-            target1.update({'share_mask0': share_mask0, 'outflow_mask': outflow_mask})
-            target2.update({'share_mask1': share_mask1, 'inflow_mask': inflow_mask})
+            target1.update({'share_mask0': share_mask0, 'outflow_mask': outflow_mask, 'gt_flag': self.gt_flags[index]})
+            target2.update({'share_mask1': share_mask1, 'inflow_mask': inflow_mask, 'gt_flag': self.gt_flags[index]})
 
         strong_img1 = self.strong_aug(img1)
         strong_img2 = self.strong_aug(img2)
