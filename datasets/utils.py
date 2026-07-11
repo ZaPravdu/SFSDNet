@@ -56,8 +56,6 @@ def get_testset(config, Dataset, cfg_data, training=False):
     # e.g. 'train/HT21-01', no frames/ dir, no sub-clip expansion
     fullset = []
     for scene in scene_names:
-        kwargs = dict(gt_ratio=getattr(config, 'gt_ratios_per_scene', 0.0)) \
-            if Dataset == datasets.dataset.P2RDataset else {}
         sub_dataset = Dataset(scene_name=scene,
                                   base_path=config.dataset_path,
                                   main_transform=main_transform,
@@ -66,8 +64,7 @@ def get_testset(config, Dataset, cfg_data, training=False):
                                   skip_flag=False,
                                   target=True,
                                   datasetname=datasetname,
-                                  training=training,
-                                  **kwargs)
+                                  training=training)
         fullset.append(sub_dataset)
     test_dataset = torch.utils.data.ConcatDataset(fullset)
     
@@ -107,6 +104,109 @@ def get_testset(config, Dataset, cfg_data, training=False):
     else:
         raise NotImplementedError("Should not happen...")
     return test_loader, test_dataset
+
+
+def build_temporal_datasets(config, cfg_data):
+    """Build labeled/unlabeled train/val datasets for temporal-consistency training.
+
+    Parameters
+    ----------
+    config : argparse.Namespace
+        Requires ``data_mode``, ``dataset_path``, ``scene_path``,
+        ``gt_ratios_per_scene``, ``training_mode`` (``supervised`` or
+        ``semi_supervised``), and optionally ``single_scene``.
+    cfg_data : edict
+        Dataset config (``TRAIN_SIZE``, ``MEAN_STD``, ``VAL_FRAME_INTERVALS``).
+
+    Returns
+    -------
+    train_dataset : ConcatDataset
+        supervised  mode → only labeled frame pairs.
+        semi_supervised mode → labeled + unlabeled (full set).
+    val_dataset : ConcatDataset
+        Always → only unlabeled frame pairs (no GT leakage).
+    """
+    # ── Transforms ────────────────────────────────────────────────
+    main_transform = datasets.train_resize_transform(
+        cfg_data.TRAIN_SIZE[0], cfg_data.TRAIN_SIZE[1], flip=False)
+    img_transform = standard_transforms.Compose([
+        standard_transforms.ToTensor(),
+        standard_transforms.Normalize(*cfg_data.MEAN_STD),
+    ])
+    datasetname = (
+        config.data_mode
+        if config.data_mode == 'MovingDroneCrowd'
+        else config.data_mode.upper()
+    )
+
+    # ── Scene list ────────────────────────────────────────────────
+    scene_names = []
+    with open(config.scene_path) as f:
+        scene_names = [line.strip() for line in f]
+    if getattr(config, 'single_scene', None):
+        matched = [s for s in scene_names if s == config.single_scene]
+        assert matched, (
+            f"Single scene '{config.single_scene}' not found in "
+            f"{config.scene_path}"
+        )
+        scene_names = matched
+
+    # MDC: expand sub-clips under each scene
+    if datasetname == 'MovingDroneCrowd':
+        expanded = []
+        for scene_name in scene_names:
+            root = os.path.join(config.dataset_path, 'frames', scene_name)
+            if '/' in scene_name:
+                expanded.append(scene_name)
+            else:
+                clips = sorted(
+                    c for c in os.listdir(root) if '.' not in c)
+                for clip in clips:
+                    expanded.append(f'{scene_name}/{clip}')
+        scene_names = expanded
+
+    # ── Per-scene P2RDataset → split_by_gt ───────────────────────
+    gt_ratio = getattr(config, 'gt_ratios_per_scene', 0.0)
+    labeled_sets, unlabeled_sets = [], []
+    for scene in scene_names:
+        ds = P2RDataset(
+            scene_name=scene,
+            base_path=config.dataset_path,
+            main_transform=main_transform,
+            img_transform=img_transform,
+            interval=cfg_data.VAL_FRAME_INTERVALS,
+            skip_flag=False,
+            target=True,
+            datasetname=datasetname,
+            training=True,
+            gt_ratio=gt_ratio,
+        )
+        labeled, unlabeled = ds.split_by_gt()
+        if labeled is not None:
+            labeled_sets.append(labeled)
+        if unlabeled is not None:
+            unlabeled_sets.append(unlabeled)
+
+    assert unlabeled_sets, \
+        f"No unlabeled samples for any scene — gt_ratio={gt_ratio} may be 1.0"
+
+    # ── Assemble train / val ──────────────────────────────────────
+    val_dataset = torch.utils.data.ConcatDataset(unlabeled_sets)
+
+    if config.training_mode == 'supervised':
+        assert labeled_sets, \
+            f"supervised mode requires labeled samples, but gt_ratio={gt_ratio} " \
+            f"produced none"
+        train_dataset = torch.utils.data.ConcatDataset(labeled_sets)
+    elif config.training_mode == 'semi_supervised':
+        all_sets = labeled_sets + unlabeled_sets
+        train_dataset = torch.utils.data.ConcatDataset(all_sets)
+    else:
+        raise ValueError(
+            f"Unknown training_mode '{config.training_mode}'. "
+            f"Use 'supervised' or 'semi_supervised'.")
+
+    return train_dataset, val_dataset
 
 
 def get_per_scene_loaders(config, Dataset, cfg_data, training=False):

@@ -31,7 +31,7 @@ from importlib import import_module
 import datasets
 from config import cfg
 from datasets.dataset import P2RDataset
-from datasets.utils import get_testset, get_per_scene_loaders
+from datasets.utils import get_per_scene_loaders, build_temporal_datasets
 from model.VIC import Video_Counter
 from model.gate_utils import add_gates_to_conv, add_gates_to_attention
 import model.gate_variance as gate_variance
@@ -264,8 +264,13 @@ def main():
     # ====================================================================
     # Stage 2 / P2R 训练
     # ====================================================================
-    train_loader, trainset = get_testset(args, P2RDataset, cfg_data, training=True)
-    test_loader, _ = get_testset(args, P2RDataset, cfg_data)
+    train_dataset, val_dataset = build_temporal_datasets(args, cfg_data)
+    train_loader = DataLoader(
+        train_dataset, shuffle=True, batch_size=1, drop_last=False,
+        num_workers=4, collate_fn=datasets.p2r_collate_fn, persistent_workers=True)
+    val_loader = DataLoader(
+        val_dataset, shuffle=False, batch_size=1, drop_last=False,
+        num_workers=4, collate_fn=datasets.p2r_collate_fn, persistent_workers=True)
 
     fast_dev_run, wandb_logger = get_logger(args)
     model = model_assembler.get_model(
@@ -291,9 +296,9 @@ def main():
     )
 
     if args.validate_mode:
-        trainer.validate(model, test_loader)
+        trainer.validate(model, val_loader)
     else:
-        trainer.fit(model, train_loader, test_loader)
+        trainer.fit(model, train_loader, val_loader)
 
     model.diagnose.save()
 

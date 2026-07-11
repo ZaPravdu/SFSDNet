@@ -503,6 +503,20 @@ class P2RDataset(TestDataset):
         step = max(1, int(1 / self.gt_ratio))
         return [i % step == 0 for i in range(n_pairs)]
 
+    def split_by_gt(self):
+        """Split into (labeled, unlabeled) Subsets by gt_flags.
+
+        Returns
+        -------
+        labeled : Subset or None  —  samples with gt_flag=True
+        unlabeled : Subset or None  —  samples with gt_flag=False
+        """
+        labeled_idx = [i for i, f in enumerate(self.gt_flags) if f]
+        unlabeled_idx = [i for i, f in enumerate(self.gt_flags) if not f]
+        labeled = data.Subset(self, labeled_idx) if labeled_idx else None
+        unlabeled = data.Subset(self, unlabeled_idx) if unlabeled_idx else None
+        return labeled, unlabeled
+
     def __getitem__(self, index):
         assert self.valid[index], f"[P2RDataset] Invalid index {index} — frame may be missing or out of range"
 
