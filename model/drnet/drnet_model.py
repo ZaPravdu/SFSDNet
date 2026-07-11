@@ -122,7 +122,7 @@ class DRNetModel(LightningModule):
             reg = torch.tensor(0.)
 
         self.log_dict({
-            'train/loss': total_loss, 'train/counting_mse': counting_mse,
+            'train_loss': total_loss, 'train/counting_mse': counting_mse,
             'train/matching_loss': matching_loss, 'train/hard_loss': hard_loss,
             'train/kpi_den': kpi['den'], 'train/kpi_match': kpi['match'],
             'train/reg': reg,
