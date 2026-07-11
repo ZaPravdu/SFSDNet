@@ -40,12 +40,11 @@ class P2RModel(HyperModel):
                 "will fail. Use model_assembler.get_model() instead.",
                 cfg.MODEL,
             )
-        self.labeled_set = self._build_labeled_set()
+        self.labeled_set = None  # replaced by dataset-level gt_flag
         self._setup_student_teacher()
         self._load_pretrained_weights(self.weight_path)
         self._inject_gates()
         self.criterion = nn.MSELoss()
-        self.ema_momentum = 0.998
         self.den_factor = self.cfg_data.DEN_FACTOR
         self._reg_coeff_externally_set = False  # tracked for on_train_epoch_start guard
 
@@ -96,10 +95,9 @@ class P2RModel(HyperModel):
 
     def _setup_student_teacher(self):
         self.student = Video_Counter(self.cfg, self.cfg_data).eval()
-        if self.training_mode == 'p2r' and self.pseudo:
+        if self.ST:
             self.teacher = Video_Counter(self.cfg, self.cfg_data).eval()
-            for p in self.teacher.parameters():
-                p.requires_grad = False
+            super()._setup_teacher(self.teacher)
 
         freeze_config = [
             (self.freeze_backbone, self.student.Extractor),
@@ -119,7 +117,7 @@ class P2RModel(HyperModel):
         state = torch.load(weight_path)
         new_state = {k[7:] if k.startswith('module.') else k: v for k, v in state.items()}
         self.student.load_state_dict(new_state, strict=True)
-        if self.training_mode == 'p2r' and self.pseudo:
+        if self.ST:
             self.teacher.load_state_dict(new_state, strict=True)
 
     def _inject_gates(self):
@@ -188,30 +186,19 @@ class P2RModel(HyperModel):
     # ── Loss dispatch ─────────────────────────────────────────────
 
     def calculate_loss(self, data, mode):
-        sid = self._sample_id(data)
-        self._diag_sid = sid  # 供 diagnose log 读取
-
-        # Per-scene labeled-sample budget tracking (only during training)
-        if mode == 'train' and self.labeled_set is not None:
-            self.labeled_set.add(sid)
-
-        # Determine if this sample has been selected into the labeled set
-        has_gt = self.labeled_set is not None and sid in self.labeled_set
-
-        # ── Loss dispatch ───────────────────────────────────────────
         if mode == 'val':
-            if has_gt:
-                return None  # prevent validation-data leakage via held-out GT samples
+            # val: always compute metrics via supervised loss
             loss = self._supervised_loss((data[0], data[2]), mode)
 
         elif mode == 'train':
-            if has_gt:
-                loss = self._supervised_loss((data[0], data[2]), mode)
+            if self.training_mode == 'unsupervised':
+                loss = self._p2r_loss(data)
             else:
-                if self.pseudo:
-                    loss = self._p2r_loss(data)
+                gt_flag = data[2][0].get('gt_flag', True)
+                if gt_flag:
+                    loss = self._supervised_loss((data[0], data[2]), mode)
                 else:
-                    return None  # unlabeled sample in supervised mode — skip update
+                    loss = self._p2r_loss(data)
 
         else:
             raise ValueError(f"Unknown mode '{mode}'")
@@ -229,7 +216,6 @@ class P2RModel(HyperModel):
             n_trainable = sum(1 for _, p in gates if p.requires_grad)
             print(f'  Trainable: {n_trainable}/{len(gates)}')
             assert n_trainable > 0, 'No trainable gate parameters — gates will never update!'
-        self._validate_gt_sampling()
         self.diagnose.log_data_info(self)
 
     def on_after_backward(self):
@@ -247,17 +233,10 @@ class P2RModel(HyperModel):
                 )
 
 
-    def ema_update(self):
-        if not self.pseudo:
-            return
-        with torch.no_grad():
-            for pt, ps in zip(self.teacher.parameters(), self.student.parameters()):
-                pt.data.copy_(pt.data * self.ema_momentum + ps.data * (1.0 - self.ema_momentum))
-
     # ── Single test ───────────────────────────────────────────────
 
     def single_test(self, img, targets):
-        assert self.training_mode == 'p2r', 'single_test only in p2r mode'
+        assert self.ST, 'single_test requires ST=True (teacher needed)'
         self.teacher = self.teacher.eval()
         with torch.no_grad():
             pseudo_global, gt_global, pseudo_share, gt_share, pseudo_io, gt_io, _ = self.teacher(img, targets)
@@ -284,7 +263,6 @@ class P2RModel(HyperModel):
             pass  # coefficients from external injection (e.g. variance reg), trust them
         else:
             self._assert_default_reg_coeff()
-        self._validate_gt_sampling()
         self.diagnose.on_epoch_start(self)
 
     def _assert_default_reg_coeff(self):
@@ -328,30 +306,26 @@ class P2RModel(HyperModel):
                      len(self.labeled_set._per_scene_max), total_budget)
 
     def _compute_delta_L(self):
-        """Iterate labeled samples, compute correct per-pixel-MSE Fisher → set reg_coeff."""
+        """Iterate labeled samples, compute per-pixel-MSE Fisher → set reg_coeff."""
         if not self.inject_gate:
             return
         self.student.eval()
         print('[P2RModel] Computing delta-L regularization')
 
-        processed = 0  # track how many samples are actually computed
+        processed = 0
 
         def forward_fn(batch):
             nonlocal processed
             weak_img, _, targets = batch
             weak_img = weak_img.to(self.device)
 
-            # LabeledSet filtering — only process held-out labeled samples
-            if self.labeled_set is not None:
-                sid = self._sample_id(batch)
-                self.labeled_set.add(sid)
-                if sid not in self.labeled_set:
-                    logger.debug('[P2RModel] Delta-L: skip sample %s (not in labeled set)', sid)
-                    return None
+            # Skip unlabeled samples (Delta-L needs GT for meaningful Fisher)
+            if self.training_mode != 'supervised' \
+                    and not targets[0].get('gt_flag', True):
+                return None
 
             processed += 1
             out = self.student(weak_img, targets)
-            # out = (pre_global, gt_global, pre_share, gt_share, pre_io, gt_io, _)
             pred = torch.cat([out[0], out[2], out[4]], dim=1)
             target = torch.cat([out[1], out[3], out[5]], dim=1).detach()
             return pred, target
@@ -363,32 +337,7 @@ class P2RModel(HyperModel):
             forward_fn, self.train_loader, gate_params, self.device,
             mc_iters=3, quiet=False)
 
-        # Log + validate sample counts vs budget
-        if self.labeled_set is not None:
-            actual_total = sum(self.labeled_set._counts.values())
-            budget_total = sum(self.labeled_set._per_scene_max.values())
-            logger.debug('[P2RModel] Delta-L: processed=%d samples, labeled_set has %d unique sids',
-                         processed, actual_total)
-            for scene in sorted(self.labeled_set._per_scene_max):
-                budget = self.labeled_set._per_scene_max[scene]
-                actual = self.labeled_set._counts.get(scene, 0)
-                logger.debug('  %s: processed=%d, budget=%d', scene, actual, budget)
-                assert actual <= budget, (
-                    f"Scene '{scene}' has {actual} labeled samples, exceeds budget {budget}"
-                )
-            # processed tracks all forward_fn calls that returned non-None;
-            # labeled_set._counts tracks unique sids added — both reflect the same
-            # set of labeled samples collected in this pass.
-            assert processed == actual_total, (
-                f"processed ({processed}) != labeled_set._counts.total ({actual_total}) — "
-                f"forward_fn and add() are out of sync"
-            )
-            if processed < budget_total:
-                logger.debug('  (dataset has fewer samples than budget: %d < %d)',
-                             processed, budget_total)
-        else:
-            logger.debug('[P2RModel] Delta-L: processed %d samples (no budget limit)',
-                         processed)
+        logger.debug('[P2RModel] Delta-L: processed %d samples', processed)
 
         nm = dict(self.student.named_modules())
 
@@ -448,13 +397,20 @@ class P2RModel(HyperModel):
         return loss
 
     def _p2r_loss(self, data):
-        # 只被未标记样本调用（标记样本走 _supervised_loss），不再需要 gt_flag
         weak_img, student_img, targets = data
 
         with torch.no_grad():
-            pseudo_global, gt_global, pseudo_share, gt_share, pseudo_io, gt_io, _ = self.teacher(weak_img, targets)
+            if self.ST:
+                pseudo_global, gt_global, pseudo_share, gt_share, pseudo_io, gt_io, _ = \
+                    self.teacher(weak_img, targets)
+            else:
+                self.student.eval()
+                pseudo_global, gt_global, pseudo_share, gt_share, pseudo_io, gt_io, _ = \
+                    self.student(weak_img, targets)
+                self.student.train()
 
         if self.dens_recon:
+            model_for_recon = self.teacher if self.ST else self.student
             recon_dots = []
             for dens in [pseudo_global, pseudo_share]:
                 dens = dens.detach()
@@ -468,7 +424,7 @@ class P2RModel(HyperModel):
             in_out_dots = global_dots - share_dots
             results = []
             for dots in [global_dots, share_dots, in_out_dots]:
-                results.append(self.teacher.Gaussian(dots))
+                results.append(model_for_recon.Gaussian(dots))
             pseudo_global, pseudo_share, pseudo_io = results
 
         pre_global, _, pre_share, _, pre_io, _, _ = self.student(student_img, targets)
@@ -542,11 +498,10 @@ class P2RModel(HyperModel):
         }
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
-    # ── EMA (on_train_batch_end) ──────────────────────────────────
+    # ── HyperModel hooks delegation ───────────────────────────────
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
-        if self.pseudo and self.ST:
-            self.ema_update()
+        super().on_train_batch_end(outputs, batch, batch_idx)
         self.diagnose.on_batch_end(self, batch_idx)
 
     def on_train_epoch_end(self):
@@ -558,23 +513,16 @@ class P2RModel(HyperModel):
     # ── Checkpoint ────────────────────────────────────────────────
 
     def on_save_checkpoint(self, checkpoint):
+        super().on_save_checkpoint(checkpoint)
         checkpoint['student'] = self.student.state_dict()
-        if self.pseudo:
-            checkpoint['teacher'] = self.teacher.state_dict()
-            checkpoint['ema_momentum'] = self.ema_momentum
-        if self.labeled_set is not None:
-            checkpoint['labeled_set'] = self.labeled_set.serialize()
 
     def on_load_checkpoint(self, checkpoint):
-        if self.pseudo and 'teacher' in checkpoint:
-            self.teacher.load_state_dict(checkpoint['teacher'])
-            if 'ema_momentum' in checkpoint:
-                self.ema_momentum = checkpoint['ema_momentum']
-        if self.labeled_set is not None and 'labeled_set' in checkpoint:
-            self.labeled_set.deserialize(checkpoint['labeled_set'])
+        super().on_load_checkpoint(checkpoint)
+        if 'student' in checkpoint:
+            self.student.load_state_dict(checkpoint['student'])
 
     def get_teacher_model(self):
-        assert self.pseudo, 'teacher only exists when pseudo=True'
+        assert self.ST, 'teacher only exists when ST=True'
         return self.teacher
 
     def get_student_model(self):
@@ -667,13 +615,12 @@ def vis_batch(data, gt_den=None, pred_den=None, idx=0):
 def _make_train_cfg(**overrides):
     """Default training config for tests. Override via kwargs."""
     cfg = SimpleNamespace(
-        training_mode='p2r', lr=0.0001, weight_decay=1e-6, max_epochs=10,
+        training_mode='semi_supervised', lr=0.0001, weight_decay=1e-6, max_epochs=10,
         dens_recon=False, ST=False, beta=1, reg_mode='l2',
         use_attention_gate=False, batch_size=8, gate_freeze_json=None,
         delta_L_mode=None, use_variance_reg=False, gt_ratios_per_scene=0,
         freeze_backbone=True, freeze_feature_fuse=True, freeze_head=True,
-        freeze_attention=True, pseudo=False, weight_path=None,
-        inject_gate=True,
+        freeze_attention=True, weight_path=None, inject_gate=True,
     )
     for k, v in overrides.items():
         setattr(cfg, k, v)
@@ -715,27 +662,27 @@ class TestP2RModelHelpers:
 
 
 class TestCalculateLoss:
-    """Test the calculate_loss dispatch logic contract.
+    """Test calculate_loss dispatch.
 
-    Contract summary:
-    ─────────────────────────────────────────────────────
-    mode      | has_gt (= in labeled_set) | pseudo=❓ → action
-    train     | True                      | any        → _supervised_loss
-    train     | False                     | True       → _p2r_loss
-    train     | False                     | False      → None (skip update)
-    val       | True                      | any        → None (skip, prevent leakage)
-    val       | False                     | any        → _supervised_loss
-    ─────────────────────────────────────────────────────
-
-    labeled_set.add(sid) is only called in train mode when labeled_set is not None.
-    When labeled_set is None, has_gt is always False.
+    Contract:
+    ───────────────────────────────────────────────────────────────
+    training_mode    | gt_flag  | mode   → action
+    supervised       | any      | val     → _supervised_loss
+    semi_supervised  | any      | val     → _supervised_loss
+    unsupervised     | any      | val     → _supervised_loss
+    supervised       | any      | train   → _supervised_loss
+    semi_supervised  | True     | train   → _supervised_loss
+    semi_supervised  | False    | train   → _p2r_loss
+    unsupervised     | any      | train   → _p2r_loss
+    ───────────────────────────────────────────────────────────────
     """
 
-    BATCH_DATA = None  # class-level cache to avoid re-creating tensors
+    BATCH_DATA_WITH_GT = None
+    BATCH_DATA_NO_GT = None
 
     @pytest.fixture
     def model(self):
-        """Minimal P2RModel with heavy components and loss methods stubbed out."""
+        """Minimal P2RModel with loss methods stubbed out."""
         with patch('model.p2r_model.Video_Counter'), \
              patch('model.p2r_model.add_gates_to_conv'), \
              patch('model.p2r_model.add_gates_to_attention'), \
@@ -744,145 +691,76 @@ class TestCalculateLoss:
             cfg_data = Mock(DEN_FACTOR=200)
             m = P2RModel(cfg, cfg_data, _make_train_cfg())
 
-            # Stub loss methods to return identifiable values
             m._supervised_loss = Mock(return_value=torch.tensor(10.0))
             m._p2r_loss = Mock(return_value=torch.tensor(20.0))
-
-            # Stub sample ID for deterministic behavior
-            m._sample_id = Mock(return_value='test_scene/1_2')
-
             return m
 
-    @pytest.fixture
-    def data(self):
-        """Minimal batch tuple: (img, img, targets)."""
-        if TestCalculateLoss.BATCH_DATA is None:
+    @pytest.fixture(params=['gt', 'no_gt'])
+    def data(self, request):
+        """Batch with gt_flag=True or False in targets."""
+        key = 'BATCH_DATA_WITH_GT' if request.param == 'gt' else 'BATCH_DATA_NO_GT'
+        cache = getattr(TestCalculateLoss, key)
+        if cache is None:
             img = torch.randn(2, 3, 64, 64)
+            gt_flag = request.param == 'gt'
             targets = [
-                {'scene_name': 'test_scene', 'frame': 1},
-                {'scene_name': 'test_scene', 'frame': 2},
+                {'scene_name': 'test', 'frame': 1, 'gt_flag': gt_flag},
+                {'scene_name': 'test', 'frame': 2, 'gt_flag': gt_flag},
             ]
-            TestCalculateLoss.BATCH_DATA = (img, img, targets)
-        return TestCalculateLoss.BATCH_DATA
+            cache = (img, img, targets)
+            setattr(TestCalculateLoss, key, cache)
+        return cache
 
-    # ── Train mode ────────────────────────────────────────────────
+    # ── Val: always _supervised_loss ──────────────────────────────
 
-    def test_train_labeled_calls_supervised_loss(self, model, data):
-        """Train + has_gt → _supervised_loss"""
-        model.labeled_set = MagicMock()
-        model.labeled_set.__contains__.return_value = True
-
-        loss = model.calculate_loss(data, 'train')
-
-        model._supervised_loss.assert_called_once_with((data[0], data[2]), 'train')
-        model._p2r_loss.assert_not_called()
-        assert loss.item() == 10.0
-
-    def test_train_unlabeled_pseudo_calls_p2r_loss(self, model, data):
-        """Train + no_gt + pseudo → _p2r_loss"""
-        model.labeled_set = None
-        model.pseudo = True
-
-        loss = model.calculate_loss(data, 'train')
-
-        model._p2r_loss.assert_called_once_with(data)
-        model._supervised_loss.assert_not_called()
-        assert loss.item() == 20.0
-
-    def test_train_unlabeled_no_pseudo_returns_none(self, model, data):
-        """Train + no_gt + no pseudo → None (skip update)"""
-        model.labeled_set = None
-        model.pseudo = False
-
-        loss = model.calculate_loss(data, 'train')
-
-        model._supervised_loss.assert_not_called()
-        model._p2r_loss.assert_not_called()
-        assert loss is None
-
-    # ── Validation mode ───────────────────────────────────────────
-
-    def test_val_labeled_returns_none(self, model, data):
-        """Val + has_gt → None (prevent test leakage)"""
-        model.labeled_set = MagicMock()
-        model.labeled_set.__contains__.return_value = True
-
+    def test_val_always_supervised_loss(self, model, data):
         loss = model.calculate_loss(data, 'val')
-
-        model._supervised_loss.assert_not_called()
-        model._p2r_loss.assert_not_called()
-        assert loss is None
-
-    def test_val_unlabeled_calls_supervised_loss(self, model, data):
-        """Val + no_gt → _supervised_loss"""
-        model.labeled_set = None
-
-        loss = model.calculate_loss(data, 'val')
-
         model._supervised_loss.assert_called_once_with((data[0], data[2]), 'val')
         model._p2r_loss.assert_not_called()
         assert loss.item() == 10.0
 
-    # ── labeled_set edge cases ────────────────────────────────────
+    # ── Train + supervised ────────────────────────────────────────
 
-    def test_labeled_set_add_only_in_train(self, model, data):
-        """labeled_set.add() is only called in train mode, never in val."""
-        model.labeled_set = MagicMock()
-        model.labeled_set.__contains__.return_value = True
+    def test_supervised_train_calls_supervised_loss(self, model, data):
+        model.training_mode = 'supervised'
+        loss = model.calculate_loss(data, 'train')
+        model._supervised_loss.assert_called_once()
+        model._p2r_loss.assert_not_called()
+        assert loss.item() == 10.0
 
-        model.calculate_loss(data, 'val')
-        model.labeled_set.add.assert_not_called()
+    # ── Train + semi_supervised ───────────────────────────────────
 
-        model.calculate_loss(data, 'train')
-        model.labeled_set.add.assert_called_once_with('test_scene/1_2')
-
-    def test_labeled_set_add_may_be_rejected_by_budget(self, model, data):
-        """add() can silently reject (budget full); calculate_loss respects that."""
-        model.labeled_set = MagicMock()
-        # add() is called, but __contains__ still returns False → sample not labeled
-        model.labeled_set.__contains__.return_value = False
-        model.pseudo = True
+    def test_semi_supervised_gt_calls_supervised_loss(self, model, data):
+        """semi_supervised + gt_flag=True → _supervised_loss"""
+        model.training_mode = 'semi_supervised'
+        if not data[2][0].get('gt_flag'):
+            pytest.skip('this test needs gt_flag=True')
 
         loss = model.calculate_loss(data, 'train')
+        model._supervised_loss.assert_called_once()
+        model._p2r_loss.assert_not_called()
+        assert loss.item() == 10.0
 
-        model.labeled_set.add.assert_called_once_with('test_scene/1_2')
-        model._p2r_loss.assert_called_once()      # unlabeled path
+    def test_semi_supervised_no_gt_calls_p2r_loss(self, model, data):
+        """semi_supervised + gt_flag=False → _p2r_loss"""
+        model.training_mode = 'semi_supervised'
+        if data[2][0].get('gt_flag'):
+            pytest.skip('this test needs gt_flag=False')
+
+        loss = model.calculate_loss(data, 'train')
+        model._p2r_loss.assert_called_once_with(data)
         model._supervised_loss.assert_not_called()
         assert loss.item() == 20.0
 
-    def test_labeled_set_add_before_contains_semantics(self, model, data):
-        """When labeled_set is real, a freshly-seen sample gets labeled same iteration.
+    # ── Train + unsupervised ──────────────────────────────────────
 
-        Proves add(sid) happens before contains(sid) inside calculate_loss(train).
-        """
-        model.labeled_set = LabeledSet(ratio=1, scene_totals={'test_scene': 10})
-        model.pseudo = True
-
+    def test_unsupervised_train_calls_p2r_loss(self, model, data):
+        model.training_mode = 'unsupervised'
         loss = model.calculate_loss(data, 'train')
-
-        # The sample should have been added and then found in contains()
-        assert 'test_scene/1_2' in model.labeled_set
-        model._supervised_loss.assert_called_once()
-        assert loss.item() == 10.0
-
-    def test_labeled_set_none_treated_as_unlabeled(self, model, data):
-        """When labeled_set is None, all samples have has_gt=False."""
-        model.labeled_set = None
-        model.pseudo = False
-
-        loss = model.calculate_loss(data, 'train')
-
-        assert loss is None
+        model._p2r_loss.assert_called_once_with(data)
         model._supervised_loss.assert_not_called()
-        model._p2r_loss.assert_not_called()
+        assert loss.item() == 20.0
 
-    def test_labeled_set_none_skips_add_in_train(self, model, data):
-        """When labeled_set is None, add() is not called."""
-        model.labeled_set = None
-
-        model.calculate_loss(data, 'train')
-        # No error should occur — the add() guard prevents it.
-        model._supervised_loss.assert_not_called()
 
 
 class TestP2RLoss:

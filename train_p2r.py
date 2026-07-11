@@ -42,7 +42,7 @@ import argparse
 _BOOL_FIELDS = [
     'shuffle', 'validate_mode', 'dens_recon', 'ST',
     'freeze_backbone', 'freeze_feature_fuse', 'freeze_head', 'freeze_attention',
-    'use_attention_gate', 'pseudo', 'use_variance_reg', 'inject_gate',
+    'use_attention_gate', 'use_variance_reg', 'inject_gate',
 ]
 
 
@@ -82,11 +82,11 @@ def parse_args():
     parser.add_argument('--reg-mode', type=str, default='l2', choices=['l1', 'l2'])
     parser.add_argument('--beta', type=float, default=1.0)
     parser.add_argument('--use-attention-gate', type=int, default=1, choices=[0, 1])
-    parser.add_argument('--training-mode', type=str, default='p2r', choices=['p2r', 'supervised'])
+    parser.add_argument('--training-mode', type=str, default='semi_supervised',
+                        choices=['supervised', 'semi_supervised', 'unsupervised'])
     parser.add_argument('--delta-L-mode', nargs='?', type=str, const=None, default=None, choices=['exp', 'original', 'inv'])
     parser.add_argument('--gt-ratios-per-scene', type=float, default=0.0)
     parser.add_argument('--single-scene', nargs='?', type=str, const='scene_25', default=None)
-    parser.add_argument('--pseudo', type=int, default=1, choices=[0, 1])
     parser.add_argument('--gate-freeze-json', type=str, default=None)
     parser.add_argument('--use-variance-reg', type=int, default=0, choices=[0, 1])
 
@@ -195,11 +195,11 @@ def main():
     # P2R 训练需要 SDNet 架构（默认为 GD3A，缺少 decoders / cross-attention 组件）
     cfg.MODEL = args.model
     if args.model == 'DRNet':
-        if args.training_mode == 'p2r':
-            print('[DRNet] Forcing training_mode=supervised (DRNet does not support P2R)')
+        if args.training_mode != 'supervised':
+            print(f'[DRNet] Forcing training_mode=supervised (DRNet got {args.training_mode})')
             args.training_mode = 'supervised'
-        if args.pseudo:
-            args.pseudo = False
+        if args.ST:
+            args.ST = False
         args.freeze_backbone = False
         args.freeze_feature_fuse = False
         args.freeze_head = False

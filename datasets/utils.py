@@ -165,6 +165,26 @@ def build_temporal_datasets(config, cfg_data):
                     expanded.append(f'{scene_name}/{clip}')
         scene_names = expanded
 
+    # ── Unsupervised: full datasets, no splitting ─────────────────
+    if config.training_mode == 'unsupervised':
+        all_sets = []
+        for scene in scene_names:
+            all_sets.append(P2RDataset(
+                scene_name=scene,
+                base_path=config.dataset_path,
+                main_transform=main_transform,
+                img_transform=img_transform,
+                interval=cfg_data.VAL_FRAME_INTERVALS,
+                skip_flag=False,
+                target=True,
+                datasetname=datasetname,
+                training=True,
+                gt_ratio=0.0,
+            ))
+        train_dataset = torch.utils.data.ConcatDataset(all_sets)
+        val_dataset = torch.utils.data.ConcatDataset(all_sets)
+        return train_dataset, val_dataset
+
     # ── Per-scene P2RDataset → split_by_gt ───────────────────────
     gt_ratio = getattr(config, 'gt_ratios_per_scene', 0.0)
     labeled_sets, unlabeled_sets = [], []
@@ -204,7 +224,7 @@ def build_temporal_datasets(config, cfg_data):
     else:
         raise ValueError(
             f"Unknown training_mode '{config.training_mode}'. "
-            f"Use 'supervised' or 'semi_supervised'.")
+            f"Use 'supervised', 'semi_supervised', or 'unsupervised'.")
 
     return train_dataset, val_dataset
 
