@@ -16,6 +16,7 @@ from pytorch_lightning import LightningModule
 from misc.KPI_pool import Task_KPI_Pool
 from model.gate_utils import add_gates_to_conv
 from model.drnet.vic import Video_Individual_Counter
+from diagnose_logger import DiagnoseLogger
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,11 @@ class DRNetModel(LightningModule):
         if self.inject_gate:
             logger.info('Injecting gates into DRNet backbone')
             add_gates_to_conv(self.student.Extractor)
+
+        # ── Diagnose logger ─────────────────────────────────────────
+        self.diagnose = DiagnoseLogger()
+        self.diagnose.log_config(self)
+        self.diagnose.log_model_stats(self)
 
     # ── Weight loading ──────────────────────────────────────────────
 
