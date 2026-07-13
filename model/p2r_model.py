@@ -10,10 +10,8 @@ from model.VIC import Video_Counter
 from model.hyper_model import HyperModel
 from model.gate_utils import add_gates_to_conv, add_gates_to_attention, load_gate_freeze_config
 from model.gates import BaseGatedModule
-from model.labeled_set import LabeledSet
 from model.fisher import compute_fisher
 from types import SimpleNamespace
-from diagnose_logger import DiagnoseLogger
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -24,12 +22,7 @@ class P2RModel(HyperModel):
     Supports both p2r (pseudo-labeling) and supervised training modes.
     """
     def __init__(self, cfg, cfg_data, train_cfg, train_loader=None):
-        super().__init__()
-        # 从 argparse.Namespace 批量解包到 self
-        self.__dict__.update(vars(train_cfg))
-        self.train_loader = train_loader
-        self.cfg_data = cfg_data
-        self.cfg = cfg
+        super().__init__(cfg, cfg_data, train_cfg, train_loader)
         # P2RModel 专为 SDNet 设计。非 SDNet 模型（如 DRNet）应使用
         # model_assembler.get_model() 工厂，该工厂返回对应的 LightningModule。
         if cfg.MODEL != 'SDNet':
@@ -40,50 +33,10 @@ class P2RModel(HyperModel):
                 "will fail. Use model_assembler.get_model() instead.",
                 cfg.MODEL,
             )
-        self.labeled_set = None  # replaced by dataset-level gt_flag
         self._setup_student_teacher()
         self._load_pretrained_weights(self.weight_path)
         self._inject_gates()
         self.criterion = nn.MSELoss()
-        self.den_factor = self.cfg_data.DEN_FACTOR
-        self._reg_coeff_externally_set = False  # tracked for on_train_epoch_start guard
-
-        # ── Diagnose logger ─────────────────────────────────────────
-        self.diagnose = DiagnoseLogger()
-        self.diagnose.log_config(self)
-        self.diagnose.log_model_stats(self)
-
-    def _build_labeled_set(self):
-        """Build LabeledSet from train_loader scene totals and gt_ratios_per_scene."""
-        if self.gt_ratios_per_scene <= 0:
-            logger.debug('[P2RModel] gt_ratios_per_scene=%s <= 0, skipping LabeledSet', self.gt_ratios_per_scene)
-            return None
-        assert self.train_loader is not None, (
-            "train_loader required when gt_ratios_per_scene > 0"
-        )
-        from collections import defaultdict
-        dataset = self.train_loader.dataset
-        if isinstance(dataset, torch.utils.data.Subset):
-            dataset = dataset.dataset
-        scene_totals = defaultdict(int)
-        for sub_ds in dataset.datasets:
-            assert hasattr(sub_ds, 'label'), (
-                "Each sub-dataset must have .label to extract scene_name"
-            )
-            scene_name = sub_ds.label[0]['scene_name']
-            base_scene = scene_name.split('/')[0] if '/' in scene_name else scene_name
-            scene_totals[base_scene] += len(sub_ds)
-
-        ls = LabeledSet(ratio=self.gt_ratios_per_scene, scene_totals=scene_totals)
-
-        total_all = sum(scene_totals.values())
-        total_gt = sum(ls._per_scene_max.values())
-        logger.debug('[P2RModel] gt_ratios_per_scene=%s', self.gt_ratios_per_scene)
-        for scene in sorted(scene_totals.keys()):
-            logger.debug('  %s: total=%s, gt_budget=%s',
-                         scene, scene_totals[scene], ls._per_scene_max[scene])
-        logger.debug('  TOTAL: %s samples -> %s GT budget', total_all, total_gt)
-        return ls
 
     @staticmethod
     def _sample_id(data):
@@ -112,13 +65,10 @@ class P2RModel(HyperModel):
                     for p in m.parameters():
                         p.requires_grad = False
 
-    def _load_pretrained_weights(self, weight_path):
-
-        state = torch.load(weight_path)
-        new_state = {k[7:] if k.startswith('module.') else k: v for k, v in state.items()}
-        self.student.load_state_dict(new_state, strict=True)
-        if self.ST:
-            self.teacher.load_state_dict(new_state, strict=True)
+    def _fix_checkpoint_keys(self, state_dict):
+        """Remove DataParallel ``module.`` prefix from pretrained weights."""
+        return {k[7:] if k.startswith('module.') else k: v
+                for k, v in state_dict.items()}
 
     def _inject_gates(self):
         if not self.inject_gate:
@@ -193,7 +143,9 @@ class P2RModel(HyperModel):
         elif mode == 'train':
             if self.training_mode == 'unsupervised':
                 loss = self._p2r_loss(data)
-            else:
+            elif self.training_mode == 'supervised':
+                loss = self._supervised_loss((data[0], data[2]), mode)
+            else:  # semi_supervised
                 gt_flag = data[2][0].get('gt_flag', True)
                 if gt_flag:
                     loss = self._supervised_loss((data[0], data[2]), mode)
@@ -204,19 +156,6 @@ class P2RModel(HyperModel):
             raise ValueError(f"Unknown mode '{mode}'")
 
         return loss
-
-    def on_train_start(self):
-        """Log all gate parameters and confirm at least one is trainable."""
-        if self.inject_gate:
-            gates = [(n, p) for n, p in self.student.named_parameters()
-                     if 'gate' in n or 'gate_logit' in n]
-            print(f'[P2RModel] Gate parameters ({len(gates)} total):')
-            for name, p in gates:
-                print(f'  {name}: requires_grad={p.requires_grad}, shape={list(p.shape)}')
-            n_trainable = sum(1 for _, p in gates if p.requires_grad)
-            print(f'  Trainable: {n_trainable}/{len(gates)}')
-            assert n_trainable > 0, 'No trainable gate parameters — gates will never update!'
-        self.diagnose.log_data_info(self)
 
     def on_after_backward(self):
         """Assert all gate parameters received gradients from the backward pass.
@@ -255,15 +194,6 @@ class P2RModel(HyperModel):
         return pseudo_results, recon_results, dots_maps
 
     # ── Delta-L dynamic regularization ────────────────────────────
-
-    def on_train_epoch_start(self):
-        if self.delta_L_mode is not None:
-            self._compute_delta_L()
-        elif self._reg_coeff_externally_set:
-            pass  # coefficients from external injection (e.g. variance reg), trust them
-        else:
-            self._assert_default_reg_coeff()
-        self.diagnose.on_epoch_start(self)
 
     def _assert_default_reg_coeff(self):
         """Assert all reg_coeff are 1.0.
@@ -486,40 +416,6 @@ class P2RModel(HyperModel):
     def calculate_matrics(self, pred_dens, gt_dens):
         diff = (pred_dens.sum(dim=[1, 2, 3]) - gt_dens.sum(dim=[1, 2, 3])).abs()
         return diff.mean(), diff.pow(2).mean()
-
-    # ── Optimizer ─────────────────────────────────────────────────
-
-    def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.student.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-        scheduler = {
-            'scheduler': torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=self.max_epochs, eta_min=self.lr * 0.1),
-            'interval': 'epoch', 'frequency': 1, 'name': 'cosine_annealing',
-        }
-        return {'optimizer': optimizer, 'lr_scheduler': scheduler}
-
-    # ── HyperModel hooks delegation ───────────────────────────────
-
-    def on_train_batch_end(self, outputs, batch, batch_idx):
-        super().on_train_batch_end(outputs, batch, batch_idx)
-        self.diagnose.on_batch_end(self, batch_idx)
-
-    def on_train_epoch_end(self):
-        self.diagnose.on_epoch_end(self)
-
-    def on_validation_epoch_end(self):
-        self.diagnose.log_val_metrics(self)
-
-    # ── Checkpoint ────────────────────────────────────────────────
-
-    def on_save_checkpoint(self, checkpoint):
-        super().on_save_checkpoint(checkpoint)
-        checkpoint['student'] = self.student.state_dict()
-
-    def on_load_checkpoint(self, checkpoint):
-        super().on_load_checkpoint(checkpoint)
-        if 'student' in checkpoint:
-            self.student.load_state_dict(checkpoint['student'])
 
     def get_teacher_model(self):
         assert self.ST, 'teacher only exists when ST=True'
@@ -780,14 +676,14 @@ class TestP2RLoss:
 
     @pytest.fixture
     def model(self):
-        """P2RModel with mocked teacher/student, ready for _p2r_loss testing."""
+        """P2RModel with ST=True, mocked teacher/student, ready for _p2r_loss testing."""
         with patch('model.p2r_model.Video_Counter'), \
              patch('model.p2r_model.add_gates_to_conv'), \
              patch('model.p2r_model.add_gates_to_attention'), \
              patch('model.p2r_model.load_gate_freeze_config'):
             cfg = Mock()
             cfg_data = Mock(DEN_FACTOR=200)
-            m = P2RModel(cfg, cfg_data, _make_train_cfg())
+            m = P2RModel(cfg, cfg_data, _make_train_cfg(ST=True))
 
             # Mock heavy forward passes
             m.teacher = MagicMock()

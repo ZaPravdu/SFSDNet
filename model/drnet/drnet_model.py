@@ -4,24 +4,23 @@ Supports:
   * Supervised training with KPI-weighted multi-task loss.
   * Two-param-group optimiser (backbone LR + matching LR, ExponentialLR).
   * Optional gate injection for regularisation experiments.
-  * Checkpoint serialisation.
+  * Checkpoint serialisation (via HyperModel).
 """
 import logging
 
 import pytest
 import torch
 import torch.nn as nn
-from pytorch_lightning import LightningModule
 
 from misc.KPI_pool import Task_KPI_Pool
 from model.gate_utils import add_gates_to_conv
 from model.drnet.vic import Video_Individual_Counter
-from diagnose_logger import DiagnoseLogger
+from model.hyper_model import HyperModel
 
 logger = logging.getLogger(__name__)
 
 
-class DRNetModel(LightningModule):
+class DRNetModel(HyperModel):
     """Lightning wrapper for DRNet's Video_Individual_Counter.
 
     Parameters
@@ -39,22 +38,16 @@ class DRNetModel(LightningModule):
         Needed when ``gt_ratios_per_scene > 0`` (not yet implemented).
     """
     def __init__(self, cfg, cfg_data, train_cfg, train_loader=None):
-        super().__init__()
         assert cfg.MODEL == 'DRNet', f'DRNetModel requires MODEL=DRNet, got {cfg.MODEL}'
         assert train_cfg.training_mode == 'supervised', (
             f'DRNetModel requires training_mode=supervised, '
             f'got {train_cfg.training_mode}')
 
-        self.__dict__.update(vars(train_cfg))
-        self.train_loader = train_loader
-        self.cfg = cfg
-        self.cfg_data = cfg_data
-        self.den_factor = cfg_data.DEN_FACTOR
-        self.labeled_set = None
+        super().__init__(cfg, cfg_data, train_cfg, train_loader)
 
         # ── Core model ─────────────────────────────────────────────
         self.student = Video_Individual_Counter(cfg, cfg_data)
-        self._load_weights(self.weight_path)
+        self._load_pretrained_weights(self.weight_path)
 
         # ── KPI pool for adaptive loss weighting ───────────────────
         self.task_KPI = Task_KPI_Pool(
@@ -68,35 +61,23 @@ class DRNetModel(LightningModule):
             logger.info('Injecting gates into DRNet backbone')
             add_gates_to_conv(self.student.Extractor)
 
-        # ── Diagnose logger ─────────────────────────────────────────
-        self.diagnose = DiagnoseLogger()
-        self.diagnose.log_config(self)
-        self.diagnose.log_model_stats(self)
-
     # ── Weight loading ──────────────────────────────────────────────
 
-    def _load_weights(self, path):
-        if path is None:
-            logger.warning('No weight_path — training from scratch')
-            return
-        state = torch.load(path, map_location='cpu')
-        # SenseCrowd/HT21 权重来自原始 DRNet，Extractor 内部包了 DataParallel
-        # 导致 key 为 Extractor.module.xxx，模型期望的是 Extractor.xxx
-        state = {k.replace('Extractor.module.', 'Extractor.'): v
-                 for k, v in state.items()}
-        self.student.load_state_dict(state, strict=True)
-        logger.info('Loaded pretrained weights from %s', path)
+    def _fix_checkpoint_keys(self, state_dict):
+        """Fix ``Extractor.module.`` prefix from original DRNet pretrained weights."""
+        return {k.replace('Extractor.module.', 'Extractor.'): v
+                for k, v in state_dict.items()}
 
-    # ── Training ────────────────────────────────────────────────────
+    # ── Loss dispatch ───────────────────────────────────────────────
 
-    def training_step(self, batch, batch_idx):
+    def calculate_loss(self, data, mode):
         # Support both collate_fn (2-tuple) and p2r_collate_fn (3-tuple).
-        if len(batch) == 3:
-            images, _, targets = batch
-        elif len(batch) == 2:
-            images, targets = batch
+        if len(data) == 3:
+            images, _, targets = data
+        elif len(data) == 2:
+            images, targets = data
         else:
-            raise ValueError(f'Unexpected batch length: {len(batch)}')
+            raise ValueError(f'Unexpected batch length: {len(data)}')
 
         images = images.to(self.device)
         for t in targets:
@@ -104,6 +85,12 @@ class DRNetModel(LightningModule):
                 if isinstance(v, torch.Tensor):
                     t[k] = v.to(self.device, non_blocking=True)
 
+        if mode == 'train':
+            return self._train_loss(images, targets)
+        else:
+            return self._val_loss(images, targets)
+
+    def _train_loss(self, images, targets):
         out = self.student(images, targets)
         pre_map, gt_den, correct_pairs, match_pairs, tp_cnt, _ = out
         counting_mse, matching_loss, hard_loss, _ = self.student.loss
@@ -148,49 +135,7 @@ class DRNetModel(LightningModule):
 
         return total_loss
 
-    def _compute_reg(self):
-        total = torch.tensor(0., device=self.device)
-        for m in self.student.modules():
-            if isinstance(m, nn.Conv2d) and hasattr(m, 'l2_regularization'):
-                total = total + getattr(m, 'l2_regularization', lambda: 0.)()
-        return total
-
-    # ── Diagnose hooks ────────────────────────────────────────────────
-
-    def on_train_start(self):
-        """Log dataset info at start."""
-        self.diagnose.log_data_info(self)
-
-    def on_train_epoch_start(self):
-        """Snapshot gate values at epoch start."""
-        self.diagnose.on_epoch_start(self)
-
-    def on_train_batch_end(self, outputs, batch, batch_idx):
-        """Record batch-level diagnostics."""
-        self.diagnose.on_batch_end(self, batch_idx)
-
-    def on_train_epoch_end(self):
-        """Finalise epoch-level diagnostics."""
-        self.diagnose.on_epoch_end(self)
-
-    def on_validation_epoch_end(self):
-        """Record validation metrics."""
-        self.diagnose.log_val_metrics(self)
-
-    # ── Validation ──────────────────────────────────────────────────
-
-    def validation_step(self, batch, batch_idx):
-        if len(batch) == 3:
-            images, _, targets = batch
-        else:
-            images, targets = batch
-
-        images = images.to(self.device)
-        for t in targets:
-            for k, v in t.items():
-                if isinstance(v, torch.Tensor):
-                    t[k] = v.to(self.device, non_blocking=True)
-
+    def _val_loss(self, images, targets):
         pre_map, gt_den, matched = self.student.val_forward(images, targets)
 
         gt_cnt = gt_den.sum()
@@ -203,6 +148,15 @@ class DRNetModel(LightningModule):
             'val/gt_detail': gt_cnt,
         }, on_epoch=True, sync_dist=True)
         return {'val_loss': mae}
+
+    # ── Gate regularisation ─────────────────────────────────────────
+
+    def _compute_reg(self):
+        total = torch.tensor(0., device=self.device)
+        for m in self.student.modules():
+            if isinstance(m, nn.Conv2d) and hasattr(m, 'l2_regularization'):
+                total = total + getattr(m, 'l2_regularization', lambda: 0.)()
+        return total
 
     # ── Optimiser ──────────────────────────────────────────────────
 
@@ -227,15 +181,6 @@ class DRNetModel(LightningModule):
         return {'optimizer': opt,
                 'lr_scheduler': {'scheduler': sched,
                                  'interval': 'epoch', 'frequency': 1}}
-
-    # ── Checkpoint ─────────────────────────────────────────────────
-
-    def on_save_checkpoint(self, checkpoint):
-        checkpoint['student'] = self.student.state_dict()
-
-    def on_load_checkpoint(self, checkpoint):
-        if 'student' in checkpoint:
-            self.student.load_state_dict(checkpoint['student'])
 
 
 # ── Test helpers ────────────────────────────────────────────────────────────
@@ -332,7 +277,7 @@ class TestDRNetModelTrainingStep:
             TestDRNetModelTrainingStep.BATCH_3 = (
                 torch.randn(2, 3, 64, 64),
                 torch.randn(2, 3, 64, 64),
-                [{}, {}],
+                [{'points': torch.zeros((0, 2))}, {'points': torch.zeros((0, 2))}],
             )
         return TestDRNetModelTrainingStep.BATCH_3
 
@@ -341,7 +286,7 @@ class TestDRNetModelTrainingStep:
         if TestDRNetModelTrainingStep.BATCH_2 is None:
             TestDRNetModelTrainingStep.BATCH_2 = (
                 torch.randn(2, 3, 64, 64),
-                [{}, {}],
+                [{'points': torch.zeros((0, 2))}, {'points': torch.zeros((0, 2))}],
             )
         return TestDRNetModelTrainingStep.BATCH_2
 
