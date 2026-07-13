@@ -11,6 +11,7 @@ import logging
 import pytest
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from misc.KPI_pool import Task_KPI_Pool
 from model.gate_utils import add_gates_to_conv
@@ -39,8 +40,8 @@ class DRNetModel(HyperModel):
     """
     def __init__(self, cfg, cfg_data, train_cfg, train_loader=None):
         assert cfg.MODEL == 'DRNet', f'DRNetModel requires MODEL=DRNet, got {cfg.MODEL}'
-        assert train_cfg.training_mode == 'supervised', (
-            f'DRNetModel requires training_mode=supervised, '
+        assert train_cfg.training_mode in ('supervised', 'unsupervised', 'semi_supervised'), (
+            f'DRNetModel requires training_mode in supervised/unsupervised/semi_supervised, '
             f'got {train_cfg.training_mode}')
 
         super().__init__(cfg, cfg_data, train_cfg, train_loader)
@@ -85,10 +86,20 @@ class DRNetModel(HyperModel):
                 if isinstance(v, torch.Tensor):
                     t[k] = v.to(self.device, non_blocking=True)
 
-        if mode == 'train':
-            return self._train_loss(images, targets)
-        else:
+        if mode == 'val':
             return self._val_loss(images, targets)
+
+        # Three-way dispatch matching P2RModel.
+        if self.training_mode == 'supervised':
+            return self._train_loss(images, targets)
+        elif self.training_mode == 'unsupervised':
+            return self._pseudo_loss(data)
+        else:  # semi_supervised — per-batch gt_flag
+            gt_flag = targets[0].get('gt_flag', True)
+            if gt_flag:
+                return self._train_loss(images, targets)
+            else:
+                return self._pseudo_loss(data)
 
     def _train_loss(self, images, targets):
         out = self.student(images, targets)
@@ -149,6 +160,86 @@ class DRNetModel(HyperModel):
         }, on_epoch=True, sync_dist=True)
         return {'val_loss': mae}
 
+    # ── Pseudo-supervision ───────────────────────────────────────────
+
+    def _pseudo_loss(self, data):
+        """Density-map pseudo-supervision loss.
+
+        Teacher (ST=True, fast-fail if None) or student.eval() (ST=False)
+        generates pseudo density maps. Student learns from strong-aug
+        images via MSE loss with optional spatial sum-pool downsampling
+        to cancel zero-mean noise.
+
+        Parameters
+        ----------
+        data : tuple
+            3-tuple (weak_img, strong_img, targets) or 2-tuple fallback.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar loss with gradient tracking.
+        """
+        # ── Unpack ──────────────────────────────────────────────────
+        if len(data) == 3:
+            weak_img, strong_img, targets = data
+        elif len(data) == 2:
+            weak_img, targets = data
+            strong_img = weak_img
+            logger.warning(
+                'DRNetModel._pseudo_loss got 2-tuple batch — weak image '
+                'used as strong augmentation (no real strong aug)')
+        else:
+            raise ValueError(f'Unexpected batch length: {len(data)}')
+
+        weak_img = weak_img.to(self.device)
+        strong_img = strong_img.to(self.device)
+        for t in targets:
+            for k, v in t.items():
+                if isinstance(v, torch.Tensor):
+                    t[k] = v.to(self.device, non_blocking=True)
+
+        # ── Teacher: pseudo density map ─────────────────────────────
+        with torch.no_grad():
+            if self.ST:
+                teacher_pre, *_ = self.teacher(weak_img, targets)
+            else:
+                self.student.eval()
+                teacher_pre, *_ = self.student(weak_img, targets)
+                self.student.train()
+
+        # ── Student: density prediction on strong aug ───────────────
+        student_pre, *_ = self.student(strong_img, targets)
+
+        # ── Density MSE (optional sum-pool downsampling) ────────────
+        s = student_pre * self.den_factor
+        t = teacher_pre * self.den_factor
+        k = self.downsample_factor
+        if k > 1:
+            s = F.avg_pool2d(s, k) * (k ** 2)
+            t = F.avg_pool2d(t, k) * (k ** 2)
+        loss = F.mse_loss(s, t)
+
+        # ── Gate regularisation ─────────────────────────────────────
+        if self.inject_gate and self.reg_mode is not None:
+            loss = loss + float(self.beta) * self._compute_reg()
+
+        # ── Diagnostics ────────────────────────────────────────────
+        self._diag_pre_global_sum = student_pre.detach().sum().item()
+        self._diag_gt_global_sum = teacher_pre.detach().sum().item()
+        self._diag_decoder_raw_sum = (student_pre * self.den_factor).detach().sum().item()
+        self._diag_gt_scaled_sum = (teacher_pre * self.den_factor).detach().sum().item()
+        self._diag_frame_people = [len(t.get('points', [])) for t in targets]
+        self._diag_frame_gt_sums = [teacher_pre[i].detach().sum().item() for i in range(len(teacher_pre))]
+
+        self.log_dict({
+            'train/pseudo_loss': loss,
+            'train/pseudo_teacher_sum': teacher_pre.detach().sum(),
+            'train/pseudo_student_sum': student_pre.detach().sum(),
+        }, on_step=True, on_epoch=True, sync_dist=True)
+
+        return loss
+
     # ── Gate regularisation ─────────────────────────────────────────
 
     def _compute_reg(self):
@@ -191,6 +282,7 @@ def _make_train_cfg(**overrides):
     cfg = SimpleNamespace(
         training_mode='supervised', lr=5e-5, weight_decay=0.0, max_epochs=1,
         weight_path=None, inject_gate=False, reg_mode=None, beta=0.0,
+        ST=False, downsample_factor=1,
     )
     for k, v in overrides.items():
         setattr(cfg, k, v)
@@ -225,7 +317,7 @@ class TestDRNetModelInit:
         cfg_data = Mock()
         train_cfg = _make_train_cfg(training_mode='p2r')  # 错误值
 
-        with pytest.raises(AssertionError, match='supervised'):
+        with pytest.raises(AssertionError, match='supervised/unsupervised/semi_supervised'):
             DRNetModel(cfg, cfg_data, train_cfg)
 
 
@@ -364,6 +456,137 @@ class TestDRNetModelValidationStep:
             if 'frame_signal' in str(e):
                 pytest.fail(f'Bug #1: val_forward 仍要求 frame_signal 参数: {e}')
             raise
+
+
+class TestDRNetPseudoLoss:
+    """_pseudo_loss 的契约和行为。"""
+
+    B, C, H, W = 2, 1, 4, 4
+    BATCH_3 = None
+    BATCH_2 = None
+
+    @staticmethod
+    def _teacher_out(val=0.0):
+        """6-element tuple matching VIC.forward() output."""
+        d = lambda: torch.full((TestDRNetPseudoLoss.B, 1, 4, 4), val, dtype=torch.float32)
+        return d(), d(), torch.tensor(0.0), torch.tensor(0.0), torch.tensor(0.0), {}
+
+    @staticmethod
+    def _student_out(val=0.0):
+        """Same shape with grad tracking."""
+        d = lambda: torch.full((TestDRNetPseudoLoss.B, 1, 4, 4), val, dtype=torch.float32).requires_grad_(True)
+        return d(), d(), torch.tensor(0.0), torch.tensor(0.0), torch.tensor(0.0), {}
+
+    @pytest.fixture
+    def model(self):
+        from unittest.mock import patch, MagicMock
+
+        with patch('model.drnet.drnet_model.Video_Individual_Counter'), \
+             patch('model.drnet.drnet_model.Task_KPI_Pool'), \
+             patch('model.drnet.drnet_model.add_gates_to_conv'):
+
+            cfg = MagicMock()
+            cfg.MODEL = 'DRNet'
+            cfg.LR_Thre = 1e-2
+            cfg.LR_DECAY = 0.95
+
+            from types import SimpleNamespace
+            cfg_data = SimpleNamespace(DEN_FACTOR=200)
+            m = DRNetModel(cfg, cfg_data, _make_train_cfg(
+                training_mode='unsupervised', downsample_factor=1))
+
+            m.student.return_value = self._student_out(0.0)
+            m._compute_reg = MagicMock(return_value=torch.tensor(0.0))
+            return m
+
+    @pytest.fixture
+    def batch_3(self):
+        if TestDRNetPseudoLoss.BATCH_3 is None:
+            TestDRNetPseudoLoss.BATCH_3 = (
+                torch.randn(2, 3, self.H, self.W),
+                torch.randn(2, 3, self.H, self.W),
+                [{'points': torch.zeros((0, 2))}, {'points': torch.zeros((0, 2))}],
+            )
+        return TestDRNetPseudoLoss.BATCH_3
+
+    @pytest.fixture
+    def batch_2(self):
+        if TestDRNetPseudoLoss.BATCH_2 is None:
+            TestDRNetPseudoLoss.BATCH_2 = (
+                torch.randn(2, 3, self.H, self.W),
+                [{'points': torch.zeros((0, 2))}, {'points': torch.zeros((0, 2))}],
+            )
+        return TestDRNetPseudoLoss.BATCH_2
+
+    def test_returns_scalar_tensor(self, model, batch_3):
+        """返回标量 Tensor with grad."""
+        loss = model._pseudo_loss(batch_3)
+        assert isinstance(loss, torch.Tensor)
+        assert loss.ndim == 0
+        assert loss.requires_grad
+
+    def test_student_path(self, model, batch_3):
+        """ST=False: student.eval() for teacher, student.train() after."""
+        model.ST = False
+        model.teacher = None
+        loss = model._pseudo_loss(batch_3)
+        assert isinstance(loss, torch.Tensor)
+
+    def test_teacher_path(self, model, batch_3):
+        """ST=True + teacher: teacher called."""
+        from unittest.mock import MagicMock
+        model.ST = True
+        model.teacher = MagicMock()
+        model.teacher.return_value = self._teacher_out(0.0)
+        model.student.return_value = self._student_out(1.0)
+        loss = model._pseudo_loss(batch_3)
+        model.teacher.assert_called_once()
+        assert loss.item() > 0
+
+    def test_st_teacher_none_errors(self, model, batch_3):
+        """ST=True + teacher=None → AttributeError (fast-fail)."""
+        model.ST = True
+        model.teacher = None
+        with pytest.raises((AttributeError, TypeError)):
+            model._pseudo_loss(batch_3)
+
+    def test_2tuple_fallback(self, model, batch_2):
+        """2-tuple: same image for weak and strong (logged)."""
+        loss = model._pseudo_loss(batch_2)
+        assert isinstance(loss, torch.Tensor)
+
+    def test_mse_nonzero_for_different_maps(self, model, batch_3):
+        """teacher≠student → loss > 0."""
+        from unittest.mock import MagicMock
+        model.ST = True
+        model.teacher = MagicMock()
+        model.teacher.return_value = self._teacher_out(0.0)
+        model.student.return_value = self._student_out(1.0)
+        loss = model._pseudo_loss(batch_3)
+        assert loss.item() > 0
+
+    def test_downsample_factor_changes_loss(self, model, batch_3):
+        """downsample_factor > 1 改变 loss 值。"""
+        from unittest.mock import MagicMock
+        model.ST = True
+        model.teacher = MagicMock()
+        model.teacher.return_value = self._teacher_out(0.5)
+        model.student.return_value = self._student_out(0.3)
+
+        model.downsample_factor = 1
+        loss_pixel = model._pseudo_loss(batch_3).item()
+
+        model.downsample_factor = 2
+        loss_pool = model._pseudo_loss(batch_3).item()
+
+        assert loss_pixel != loss_pool, (
+            f'downsampled and pixel loss should differ '
+            f'(pixel={loss_pixel}, pool={loss_pool})')
+
+    def test_1tuple_raises(self, model):
+        """len=1 抛 ValueError."""
+        with pytest.raises(ValueError, match='Unexpected batch length'):
+            model._pseudo_loss((torch.randn(2, 3, 4, 4),))
 
 
 class TestDRNetModelOptimizer:

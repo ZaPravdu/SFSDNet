@@ -11,6 +11,7 @@ from model.points_from_den import local_maximum_points
 from model.drnet.matching import get_ROI_and_MatchInfo
 from collections import  OrderedDict
 import copy
+
 class Video_Individual_Counter(nn.Module):
     def __init__(self, cfg, cfg_data, pretrained=True):
         super(Video_Individual_Counter, self).__init__()
@@ -176,7 +177,7 @@ class Video_Individual_Counter(nn.Module):
         if len(norm_loss)>0:
             self.batch_norm_loss = torch.mean(torch.stack(norm_loss))
 
-        return pre_map, gt_den,correct_pairs_cnt,match_pairs_cnt, TP_cnt, matched_results
+        return pre_map, gt_den, correct_pairs_cnt, match_pairs_cnt, TP_cnt, matched_results
 
     def val_forward(self,img,target,frame_signal=None):
         for i in range(len(target)):
