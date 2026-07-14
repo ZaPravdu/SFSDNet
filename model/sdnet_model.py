@@ -157,21 +157,6 @@ class SDNetModel(HyperModel):
 
         return loss
 
-    def on_after_backward(self):
-        """Assert all gate parameters received gradients from the backward pass.
-
-        This hook only fires for batches that returned a real loss from
-        training_step (batches that returned None skip backward entirely),
-        so every trainable gate must have a non-None gradient.
-        """
-        for name, p in self.student.named_parameters():
-            if name.endswith('.gate') or name.endswith('_gate_logit'):
-                assert p.grad is not None, (
-                    f"Gate '{name}' has None gradient after backward — "
-                    f"not connected to computation graph"
-                )
-
-
     # ── Single test ───────────────────────────────────────────────
 
     def single_test(self, img, targets):

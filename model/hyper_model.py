@@ -218,6 +218,22 @@ class HyperModel(LightningModule):
             self.ema_update()
         self.diagnose.on_batch_end(self, batch_idx)
 
+    def on_after_backward(self):
+        """Assert all gate parameters received gradients from the backward pass.
+
+        Only fires for batches that returned a real loss (None → skip backward).
+        Every trainable gate must have a non-None gradient; a None gradient
+        means the gate is disconnected from the computation graph.
+        """
+        if not getattr(self, 'inject_gate', False):
+            return
+        for name, p in self.student.named_parameters():
+            if ('.gate' in name or name.endswith('_gate_logit')) and p.requires_grad:
+                assert p.grad is not None, (
+                    f"Gate '{name}' has None gradient after backward — "
+                    f"not connected to computation graph"
+                )
+
     def on_train_epoch_start(self):
         if self.delta_L_mode is not None:
             self._compute_delta_L()
