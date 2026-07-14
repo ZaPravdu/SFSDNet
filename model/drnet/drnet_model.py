@@ -49,6 +49,7 @@ class DRNetModel(HyperModel):
         # ── Core model ─────────────────────────────────────────────
         self.student = Video_Individual_Counter(cfg, cfg_data)
         self._load_pretrained_weights(self.weight_path)
+        self.downsample_factor = train_cfg.downsample_factor
 
         # ── KPI pool for adaptive loss weighting ───────────────────
         self.task_KPI = Task_KPI_Pool(

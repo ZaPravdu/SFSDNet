@@ -89,6 +89,7 @@ def parse_args():
     parser.add_argument('--single-scene', nargs='?', type=str, const='scene_25', default=None)
     parser.add_argument('--gate-freeze-json', type=str, default=None)
     parser.add_argument('--use-variance-reg', type=int, default=0, choices=[0, 1])
+    parser.add_argument('--downsample-factor', type=int, default=1)
 
     # ── Gate 控制 ──
     parser.add_argument('--inject-gate', type=int, default=1, choices=[0, 1])
@@ -195,11 +196,11 @@ def main():
     # P2R 训练需要 SDNet 架构（默认为 GD3A，缺少 decoders / cross-attention 组件）
     cfg.MODEL = args.model
     if args.model == 'DRNet':
-        if args.training_mode != 'supervised':
-            print(f'[DRNet] Forcing training_mode=supervised (DRNet got {args.training_mode})')
-            args.training_mode = 'supervised'
-        if args.ST:
-            args.ST = False
+        # if args.training_mode != 'supervised':
+        #     print(f'[DRNet] Forcing training_mode=supervised (DRNet got {args.training_mode})')
+        #     args.training_mode = 'supervised'
+        # if args.ST:
+        #     args.ST = False
         args.freeze_backbone = False
         args.freeze_feature_fuse = False
         args.freeze_head = False
