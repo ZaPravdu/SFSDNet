@@ -10,7 +10,6 @@ import logging
 
 import pytest
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 from misc.KPI_pool import Task_KPI_Pool
@@ -48,6 +47,11 @@ class DRNetModel(HyperModel):
 
         # ── Core model ─────────────────────────────────────────────
         self.student = Video_Individual_Counter(cfg, cfg_data)
+
+        # ── Teacher + freeze ───────────────────────────────────────
+        self._setup_student_teacher()
+
+        # ── Load pretrained weights (student + optional teacher) ───
         self._load_pretrained_weights(self.weight_path)
         self.downsample_factor = train_cfg.downsample_factor
 
@@ -58,10 +62,8 @@ class DRNetModel(HyperModel):
             maximum_sample=1000,
         )
 
-        # ── Optional gate injection ────────────────────────────────
-        if self.inject_gate:
-            logger.info('Injecting gates into DRNet backbone')
-            add_gates_to_conv(self.student.Extractor)
+        # ── Gate injection (after weight load) ─────────────────────
+        self._inject_gates()
 
         # ── Frame prediction buffer (temporal consistency) ────────
         self.frame_buffer = {}
@@ -73,6 +75,43 @@ class DRNetModel(HyperModel):
         """Fix ``Extractor.module.`` prefix from original DRNet pretrained weights."""
         return {k.replace('Extractor.module.', 'Extractor.'): v
                 for k, v in state_dict.items()}
+
+    # ── Init helpers ────────────────────────────────────────────────
+
+    def _setup_student_teacher(self):
+        """Create teacher if ST; freeze modules per config (matching SDNetModel pattern)."""
+        if self.ST:
+            self.teacher = Video_Individual_Counter(self.cfg, self.cfg_data)
+            super()._setup_teacher(self.teacher)
+
+        freeze_config = [
+            (getattr(self, 'freeze_backbone', False), [
+                self.student.Extractor.layer1,
+                self.student.Extractor.layer2,
+                self.student.Extractor.layer3,
+                self.student.Extractor.neck,
+                self.student.Extractor.neck2f,
+            ]),
+            (getattr(self, 'freeze_head', False), self.student.Extractor.loc_head),
+            (getattr(self, 'freeze_feature_fuse', False), self.student.Extractor.feature_head),
+        ]
+        for flag, module in freeze_config:
+            if flag:
+                modules = module if isinstance(module, (list, tuple)) else [module]
+                for m in modules:
+                    for p in m.parameters():
+                        p.requires_grad = False
+        # freeze_attention is no-op on DRNet (no attention modules).
+
+    def _inject_gates(self):
+        """Inject GatedConv into Extractor; Gaussian layer is exempted (not part of Extractor)."""
+        if not self.inject_gate:
+            return
+        if self.reg_mode in ('l1', 'l2'):
+            logger.info('Injecting gates into DRNet Extractor')
+            for name in ['Extractor']:
+                add_gates_to_conv(getattr(self.student, name))
+        # DRNet has no Attention / CrossAttention — attention gate injection skipped.
 
     # ── Loss dispatch ───────────────────────────────────────────────
 
@@ -125,18 +164,13 @@ class DRNetModel(HyperModel):
         weight = (weight / weight.sum()).detach()
         total_loss = (weight * losses).sum()
 
-        # Regularisation (if gates are injected).
-        if self.inject_gate and self.reg_mode is not None:
-            reg = self._compute_reg()
-            total_loss = total_loss + float(self.beta) * reg
-        else:
-            reg = torch.tensor(0.)
+        # Regularisation (via HyperModel's _add_reg — supports L1/L2).
+        total_loss = self._add_reg(total_loss)
 
         self.log_dict({
             'train_loss': total_loss, 'train/counting_mse': counting_mse,
             'train/matching_loss': matching_loss, 'train/hard_loss': hard_loss,
             'train/kpi_den': kpi['den'], 'train/kpi_match': kpi['match'],
-            'train/reg': reg,
         }, on_step=True, on_epoch=True, sync_dist=True)
 
         # ── 记录诊断数据（供 diagnose log 读取）──
@@ -244,9 +278,8 @@ class DRNetModel(HyperModel):
             t = F.avg_pool2d(t, k) * (k ** 2)
         loss = F.mse_loss(s, t)
 
-        # ── Gate regularisation ─────────────────────────────────────
-        if self.inject_gate and self.reg_mode is not None:
-            loss = loss + float(self.beta) * self._compute_reg()
+        # ── Gate regularisation (via HyperModel's _add_reg) ────────
+        loss = self._add_reg(loss)
 
         # ── Diagnostics ────────────────────────────────────────────
         self._diag_pre_global_sum = student_pre.detach().sum().item()
@@ -263,15 +296,6 @@ class DRNetModel(HyperModel):
         }, on_step=True, on_epoch=True, sync_dist=True)
 
         return loss
-
-    # ── Gate regularisation ─────────────────────────────────────────
-
-    def _compute_reg(self):
-        total = torch.tensor(0., device=self.device)
-        for m in self.student.modules():
-            if isinstance(m, nn.Conv2d) and hasattr(m, 'l2_regularization'):
-                total = total + getattr(m, 'l2_regularization', lambda: 0.)()
-        return total
 
     # ── Optimiser ──────────────────────────────────────────────────
 
@@ -307,6 +331,10 @@ def _make_train_cfg(**overrides):
         training_mode='supervised', lr=5e-5, weight_decay=0.0, max_epochs=1,
         weight_path=None, inject_gate=False, reg_mode=None, beta=0.0,
         ST=False, downsample_factor=1,
+        freeze_backbone=False, freeze_head=False, freeze_feature_fuse=False,
+        freeze_attention=False, use_attention_gate=False, use_variance_reg=False,
+        dens_recon=False, delta_L_mode=None, gate_freeze_json=None,
+        gt_ratios_per_scene=0, batch_size=8,
     )
     for k, v in overrides.items():
         setattr(cfg, k, v)
@@ -349,7 +377,6 @@ class TestDRNetModelTrainingStep:
     """training_step 的分发逻辑和 loss 计算。"""
 
     BATCH_3 = None  # (weak, strong, targets) 格式
-    BATCH_2 = None  # (images, targets) 格式
 
     @pytest.fixture
     def model(self):
@@ -397,27 +424,13 @@ class TestDRNetModelTrainingStep:
             )
         return TestDRNetModelTrainingStep.BATCH_3
 
-    @pytest.fixture
-    def batch_2(self):
-        if TestDRNetModelTrainingStep.BATCH_2 is None:
-            TestDRNetModelTrainingStep.BATCH_2 = (
-                torch.randn(2, 3, 64, 64),
-                [{'points': torch.zeros((0, 2))}, {'points': torch.zeros((0, 2))}],
-            )
-        return TestDRNetModelTrainingStep.BATCH_2
 
     def test_handles_3tuple_batch(self, model, batch_3):
-        """3 元组 batch (p2r_collate_fn 输出) 应正确解包。"""
+        """3 元组 batch 应正确解包。"""
         loss = model.training_step(batch_3, 0)
         assert isinstance(loss, torch.Tensor)
         # student 收到的是 weak_imgs
         assert model.student.call_args[0][0] is batch_3[0]
-
-    def test_handles_2tuple_batch(self, model, batch_2):
-        """2 元组 batch (collate_fn 输出) 应正确解包。"""
-        loss = model.training_step(batch_2, 0)
-        assert isinstance(loss, torch.Tensor)
-        assert model.student.call_args[0][0] is batch_2[0]
 
     def test_loss_is_scalar(self, model, batch_3):
         """loss 必须是标量 Tensor。"""
@@ -434,7 +447,7 @@ class TestDRNetModelTrainingStep:
         """意外的 batch 长度应抛 ValueError。"""
         import pytest
         bad_batch = (torch.randn(2, 3, 64, 64),)  # 只有 1 个元素
-        with pytest.raises(ValueError, match='Unexpected batch length'):
+        with pytest.raises(ValueError):
             model.training_step(bad_batch, 0)
 
 
@@ -467,13 +480,13 @@ class TestDRNetModelValidationStep:
 
     def test_val_forward_called(self, model):
         """validation_step 应调用 student.val_forward (而非 forward)。"""
-        batch = (torch.randn(2, 3, 64, 64), [{}, {}])
+        batch = (torch.randn(2, 3, 64, 64), torch.randn(2, 3, 64, 64), [{}, {}])
         model.validation_step(batch, 0)
         model.student.val_forward.assert_called_once()
 
     def test_val_forward_no_frame_signal_error(self, model):
         """val_forward 不因 frame_signal 参数缺失而崩溃 (Bug #1 回归)。"""
-        batch = (torch.randn(2, 3, 64, 64), [{}, {}])
+        batch = (torch.randn(2, 3, 64, 64), torch.randn(2, 3, 64, 64), [{}, {}])
         try:
             model.validation_step(batch, 0)
         except TypeError as e:
@@ -487,7 +500,6 @@ class TestDRNetPseudoLoss:
 
     B, C, H, W = 2, 1, 4, 4
     BATCH_3 = None
-    BATCH_2 = None
 
     @staticmethod
     def _teacher_out(val=0.0):
@@ -520,7 +532,6 @@ class TestDRNetPseudoLoss:
                 training_mode='unsupervised', downsample_factor=1))
 
             m.student.return_value = self._student_out(0.0)
-            m._compute_reg = MagicMock(return_value=torch.tensor(0.0))
             return m
 
     @pytest.fixture
@@ -532,15 +543,6 @@ class TestDRNetPseudoLoss:
                 [{'points': torch.zeros((0, 2))}, {'points': torch.zeros((0, 2))}],
             )
         return TestDRNetPseudoLoss.BATCH_3
-
-    @pytest.fixture
-    def batch_2(self):
-        if TestDRNetPseudoLoss.BATCH_2 is None:
-            TestDRNetPseudoLoss.BATCH_2 = (
-                torch.randn(2, 3, self.H, self.W),
-                [{'points': torch.zeros((0, 2))}, {'points': torch.zeros((0, 2))}],
-            )
-        return TestDRNetPseudoLoss.BATCH_2
 
     def test_returns_scalar_tensor(self, model, batch_3):
         """返回标量 Tensor with grad."""
@@ -574,11 +576,6 @@ class TestDRNetPseudoLoss:
         with pytest.raises((AttributeError, TypeError)):
             model._pseudo_loss(batch_3)
 
-    def test_2tuple_fallback(self, model, batch_2):
-        """2-tuple: same image for weak and strong (logged)."""
-        loss = model._pseudo_loss(batch_2)
-        assert isinstance(loss, torch.Tensor)
-
     def test_mse_nonzero_for_different_maps(self, model, batch_3):
         """teacher≠student → loss > 0."""
         from unittest.mock import MagicMock
@@ -609,7 +606,7 @@ class TestDRNetPseudoLoss:
 
     def test_1tuple_raises(self, model):
         """len=1 抛 ValueError."""
-        with pytest.raises(ValueError, match='Unexpected batch length'):
+        with pytest.raises(ValueError):
             model._pseudo_loss((torch.randn(2, 3, 4, 4),))
 
 

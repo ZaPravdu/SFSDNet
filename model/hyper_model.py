@@ -1,8 +1,10 @@
 from pytorch_lightning import LightningModule
 import torch
+import torch.nn as nn
 import logging
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from diagnose_logger import DiagnoseLogger
+from model.gates import BaseGatedModule
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,107 @@ class HyperModel(LightningModule):
     def calculate_loss(self, data, mode):
         """Override in subclass — return a scalar loss Tensor."""
         pass
+
+    # ── Subclass hooks ────────────────────────────────────────────
+
+    def _setup_student_teacher(self):
+        """Override in subclass — freeze model-specific modules based on freeze flags."""
+        pass
+
+    def _inject_gates(self):
+        """Override in subclass — inject GatedConv / GatedAttention into the student network."""
+        pass
+
+    # ── Shared gate regularisation ───────────────────────────────
+
+    def compute_l2_regularization(self):
+        """Sum L2 penalty over all BaseGatedModule instances in the student network."""
+        if not hasattr(self, 'student') or self.student is None:
+            return torch.tensor(0., device=self.device)
+        return sum(
+            m.l2_regularization()
+            for m in self.student.modules()
+            if isinstance(m, BaseGatedModule)
+        )
+
+    def compute_l1_regularization(self):
+        """Sum L1 penalty over all BaseGatedModule instances in the student network."""
+        if not hasattr(self, 'student') or self.student is None:
+            return torch.tensor(0., device=self.device)
+        return sum(
+            m.l1_regularization()
+            for m in self.student.modules()
+            if isinstance(m, BaseGatedModule)
+        )
+
+    def _add_reg(self, loss):
+        """Add L1 / L2 regularisation to *loss* when gates are injected.
+
+        Skips if ``inject_gate`` is False or ``reg_mode`` is None.
+        """
+        if not getattr(self, 'inject_gate', False):
+            return loss
+        if self.reg_mode == 'l2':
+            reg = self.compute_l2_regularization()
+            self.log_dict({'l2': reg.item()})
+            return loss + float(self.beta) * reg
+        elif self.reg_mode == 'l1':
+            reg = self.compute_l1_regularization()
+            self.log_dict({'l1': reg.item()})
+            return loss + float(self.beta) * reg
+        return loss
+
+    def _apply_external_reg_coeff(self, coeff_dict):
+        """Inject externally-computed reg_coeff into all BaseGatedModule instances.
+
+        Supports both :class:`~model.gates.GatedConv` (per-channel ``.gate``)
+        and :class:`~model.gates.GatedAttention` / ``GatedCrossAttention``
+        (per-head ``q_gate_logit`` / ``k_gate_logit`` / ``v_gate_logit``).
+
+        Parameters
+        ----------
+        coeff_dict : dict[str, list[float]]
+            Mapping from parameter name (e.g. ``Extractor.backbone.0.conv1.gate``)
+            to per-channel / per-head coefficient list.
+        """
+        assert coeff_dict, (
+            "_apply_external_reg_coeff called with empty coeff_dict"
+        )
+        nm = dict(self.student.named_modules())
+
+        # GatedConv: per-channel coeffs
+        for name, coeff in coeff_dict.items():
+            if name.endswith('.gate'):
+                parent_path = name.rsplit('.', 1)[0]
+                parent_mod = nm.get(parent_path)
+                if parent_mod is None:
+                    raise KeyError(
+                        f"Module '{parent_path}' not found in student network. "
+                        f"Gate param '{name}' has no matching parent."
+                    )
+                parent_mod.set_reg_coeff(coeff)
+
+        # GatedAttention: group q/k/v under same parent
+        attn = {}
+        for name, coeff in coeff_dict.items():
+            if name.endswith('_gate_logit'):
+                parent_path = name.rsplit('.', 1)[0]
+                gate_type = name.rsplit('.', 1)[1]
+                attn.setdefault(parent_path, {})[gate_type] = coeff
+
+        for parent_path, gates in attn.items():
+            parent_mod = nm.get(parent_path)
+            if parent_mod is None:
+                raise KeyError(
+                    f"Attention module '{parent_path}' not found in student network."
+                )
+            parent_mod.set_reg_coeff(
+                gates.get('q_gate_logit', [1.0] * parent_mod.num_heads),
+                gates.get('k_gate_logit', [1.0] * parent_mod.num_heads),
+                gates.get('v_gate_logit', [1.0] * parent_mod.num_heads),
+            )
+
+        self._reg_coeff_externally_set = True
 
     # ── Teacher-student helpers ────────────────────────────────────
 

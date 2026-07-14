@@ -195,18 +195,6 @@ def main():
 
     # P2R 训练需要 SDNet 架构（默认为 GD3A，缺少 decoders / cross-attention 组件）
     cfg.MODEL = args.model
-    if args.model == 'DRNet':
-        # if args.training_mode != 'supervised':
-        #     print(f'[DRNet] Forcing training_mode=supervised (DRNet got {args.training_mode})')
-        #     args.training_mode = 'supervised'
-        # if args.ST:
-        #     args.ST = False
-        args.freeze_backbone = False
-        args.freeze_feature_fuse = False
-        args.freeze_head = False
-        args.freeze_attention = False
-        if args.lr == 1e-4:
-            args.lr = 5e-5
 
     # ── 数据集配置 ──
     datasetting = import_module(f'datasets.setting.{args.data_mode}')
@@ -221,17 +209,31 @@ def main():
         print(f'  Source scenes: {args.source_scene_path}')
         print('=' * 60)
 
-        raw_model = Video_Counter(cfg, cfg_data).eval()
-        sd = torch.load(args.weight_path, map_location='cpu')
-        sd = {k[7:] if k.startswith('module.') else k: v for k, v in sd.items()}
-        raw_model.load_state_dict(sd, strict=True)
-        for p in raw_model.parameters():
-            p.requires_grad = False
-        if args.inject_gate:
-            for name in ['share_decoder', 'global_decoder', 'in_out_decoder', 'Extractor', 'feature_fuse']:
-                add_gates_to_conv(getattr(raw_model, name))
-            if args.use_attention_gate:
-                add_gates_to_attention(raw_model)
+        # Build a raw model for per-scene fine-tuning.
+        if cfg.MODEL == 'DRNet':
+            from model.drnet.vic import Video_Individual_Counter
+            raw_model = Video_Individual_Counter(cfg, cfg_data).eval()
+            sd = torch.load(args.weight_path, map_location='cpu')
+            sd = {k.replace('Extractor.module.', 'Extractor.'): v
+                  for k, v in sd.items()}
+            raw_model.load_state_dict(sd, strict=True)
+            for p in raw_model.parameters():
+                p.requires_grad = False
+            if args.inject_gate:
+                add_gates_to_conv(raw_model.Extractor)
+        else:
+            raw_model = Video_Counter(cfg, cfg_data).eval()
+            sd = torch.load(args.weight_path, map_location='cpu')
+            sd = {k[7:] if k.startswith('module.') else k: v
+                  for k, v in sd.items()}
+            raw_model.load_state_dict(sd, strict=True)
+            for p in raw_model.parameters():
+                p.requires_grad = False
+            if args.inject_gate:
+                for name in ['share_decoder', 'global_decoder', 'in_out_decoder', 'Extractor', 'feature_fuse']:
+                    add_gates_to_conv(getattr(raw_model, name))
+                if args.use_attention_gate:
+                    add_gates_to_attention(raw_model)
 
         from types import SimpleNamespace
         src_config = SimpleNamespace(
