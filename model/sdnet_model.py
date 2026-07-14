@@ -16,7 +16,7 @@ from types import SimpleNamespace
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-class P2RModel(HyperModel):
+class SDNetModel(HyperModel):
     """
     Teacher-Student P2R semi-supervised training LightningModule.
     Supports both p2r (pseudo-labeling) and supervised training modes.
@@ -142,7 +142,7 @@ class P2RModel(HyperModel):
 
         elif mode == 'train':
             if self.training_mode == 'unsupervised':
-                loss = self._p2r_loss(data)
+                loss = self._pseudo_loss(data)
             elif self.training_mode == 'supervised':
                 loss = self._supervised_loss((data[0], data[2]), mode)
             else:  # semi_supervised
@@ -150,7 +150,7 @@ class P2RModel(HyperModel):
                 if gt_flag:
                     loss = self._supervised_loss((data[0], data[2]), mode)
                 else:
-                    loss = self._p2r_loss(data)
+                    loss = self._pseudo_loss(data)
 
         else:
             raise ValueError(f"Unknown mode '{mode}'")
@@ -326,7 +326,7 @@ class P2RModel(HyperModel):
             self._log_val_metrics(pre_global, gt_global, pre_share, gt_share, pre_io, gt_io)
         return loss
 
-    def _p2r_loss(self, data):
+    def _pseudo_loss(self, data):
         weak_img, student_img, targets = data
 
         with torch.no_grad():
@@ -529,19 +529,19 @@ class TestP2RModelHelpers:
     def test_sample_id(self):
         t0 = {'scene_name': 'scene01', 'frame': 10}
         t1 = {'scene_name': 'scene01', 'frame': 5}
-        sid = P2RModel._sample_id([None, None, [t0, t1]])
+        sid = SDNetModel._sample_id([None, None, [t0, t1]])
         assert sid == 'scene01/5_10'
 
     def test_sample_id_direction_invariant(self):
         t0 = {'scene_name': 's', 'frame': 10}
         t1 = {'scene_name': 's', 'frame': 5}
-        assert P2RModel._sample_id([None, None, [t0, t1]]) == \
-               P2RModel._sample_id([None, None, [t1, t0]])
+        assert SDNetModel._sample_id([None, None, [t0, t1]]) == \
+               SDNetModel._sample_id([None, None, [t1, t0]])
 
     def test_sample_id_cross_scene(self):
         t0 = {'scene_name': 's1', 'frame': 3}
         t1 = {'scene_name': 's2', 'frame': 7}
-        sid = P2RModel._sample_id([None, None, [t0, t1]])
+        sid = SDNetModel._sample_id([None, None, [t0, t1]])
         # Uses first target's scene_name
         assert sid.startswith('s1/')
 
@@ -585,10 +585,10 @@ class TestCalculateLoss:
              patch('model.p2r_model.load_gate_freeze_config'):
             cfg = Mock()
             cfg_data = Mock(DEN_FACTOR=200)
-            m = P2RModel(cfg, cfg_data, _make_train_cfg())
+            m = SDNetModel(cfg, cfg_data, _make_train_cfg())
 
             m._supervised_loss = Mock(return_value=torch.tensor(10.0))
-            m._p2r_loss = Mock(return_value=torch.tensor(20.0))
+            m._pseudo_loss = Mock(return_value=torch.tensor(20.0))
             return m
 
     @pytest.fixture(params=['gt', 'no_gt'])
@@ -683,7 +683,7 @@ class TestP2RLoss:
              patch('model.p2r_model.load_gate_freeze_config'):
             cfg = Mock()
             cfg_data = Mock(DEN_FACTOR=200)
-            m = P2RModel(cfg, cfg_data, _make_train_cfg(ST=True))
+            m = SDNetModel(cfg, cfg_data, _make_train_cfg(ST=True))
 
             # Mock heavy forward passes
             m.teacher = MagicMock()
@@ -876,7 +876,7 @@ class TestApplyExternalRegCoeff:
              patch('model.p2r_model.load_gate_freeze_config'):
             cfg = Mock()
             cfg_data = Mock(DEN_FACTOR=200)
-            p2r = P2RModel(cfg, cfg_data, _make_train_cfg())
+            p2r = SDNetModel(cfg, cfg_data, _make_train_cfg())
             p2r.student = model
             return p2r
 

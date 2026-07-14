@@ -173,7 +173,7 @@ def collate_fn(batch):
     labels = [item for i in range(len(data[1])) for item in data[1][i]]
     return img_tensors, labels
 
-def p2r_collate_fn(batch):
+def ttda_collate_fn(batch):
     batch = [x for x in batch if x is not None]
     data = list(zip(*batch))
     weak_imgs = torch.cat([torch.stack(data[0][i], dim=0) for i in range(len(data[0]))], dim=0)

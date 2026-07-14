@@ -7,7 +7,7 @@ from torchvision import transforms as standard_transforms
 import datasets
 import random
 import math
-from datasets.dataset import P2RDataset
+from datasets.dataset import TTDADataset
 # from datasets.dataset import P2RDataset, TestDataset
 
 
@@ -71,7 +71,7 @@ def get_testset(config, Dataset, cfg_data, training=False):
     # 如果指定了partial参数，则从完整数据集中随机选择部分样本
 
     
-    if Dataset == datasets.dataset.P2RDataset:
+    if Dataset == datasets.dataset.TTDADataset:
         if config.partial is not None and 0 < config.partial < 1:
             # 计算要选择的样本数量
             total_samples = len(test_dataset)
@@ -85,7 +85,7 @@ def get_testset(config, Dataset, cfg_data, training=False):
             # 创建Subset使用选中的索引
             test_dataset = torch.utils.data.Subset(test_dataset, selected_indices)
         test_loader = DataLoader(test_dataset, shuffle=config.shuffle, batch_size=1, drop_last=False, num_workers=4,
-                             collate_fn=datasets.p2r_collate_fn, persistent_workers=True)
+                             collate_fn=datasets.ttda_collate_fn, persistent_workers=True)
     elif Dataset== datasets.dataset.TestDataset:
         if config.partial is not None and 0 < config.partial < 1:
             # 计算要选择的样本数量
@@ -169,7 +169,7 @@ def build_temporal_datasets(config, cfg_data):
     if config.training_mode == 'unsupervised':
         all_sets = []
         for scene in scene_names:
-            all_sets.append(P2RDataset(
+            all_sets.append(TTDADataset(
                 scene_name=scene,
                 base_path=config.dataset_path,
                 main_transform=main_transform,
@@ -189,7 +189,7 @@ def build_temporal_datasets(config, cfg_data):
     gt_ratio = getattr(config, 'gt_ratios_per_scene', 0.0)
     labeled_sets, unlabeled_sets = [], []
     for scene in scene_names:
-        ds = P2RDataset(
+        ds = TTDADataset(
             scene_name=scene,
             base_path=config.dataset_path,
             main_transform=main_transform,
@@ -309,6 +309,6 @@ def get_per_scene_loaders(config, Dataset, cfg_data, training=False):
         assert len(combined) > 0, f"Scene {scene_name} has 0 valid samples"
         scene_loaders[scene_name] = DataLoader(
             combined, shuffle=config.shuffle, batch_size=1, drop_last=False,
-            num_workers=0, collate_fn=datasets.p2r_collate_fn,
+            num_workers=0, collate_fn=datasets.ttda_collate_fn,
         )
     return scene_loaders

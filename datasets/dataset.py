@@ -483,10 +483,13 @@ class GaussianBlur(object):
         return x
     
 
-class P2RDataset(TestDataset):
+class TTDADataset(TestDataset):
     """P2R dataset with strong augmentation for teacher-student training."""
     def __init__(self, scene_name, base_path, main_transform=None, img_transform=None, interval=1, skip_flag=True, target=True, datasetname='Empty', training=True, gt_ratio=0.0):
         super().__init__(scene_name, base_path, main_transform, img_transform, interval, skip_flag, target, datasetname, training)
+        # Override length for linked frame pairs.
+        self.length = (len(self.imgs_path) - 1) // self.interval
+        self.valid = torch.ones(self.length)
         self.gt_ratio = gt_ratio
         self.gt_flags = self._build_gt_flags()
         self.strong_aug = transforms.Compose([
@@ -517,10 +520,14 @@ class P2RDataset(TestDataset):
         unlabeled = data.Subset(self, unlabeled_idx) if unlabeled_idx else None
         return labeled, unlabeled
 
+    def __len__(self):
+        return self.length
+
     def __getitem__(self, index):
         assert self.valid[index], f"[P2RDataset] Invalid index {index} — frame may be missing or out of range"
 
-        index1, index2 = index, index + self.interval
+        index1 = index * self.interval
+        index2 = (index + 1) * self.interval
         img1 = Image.open(self.imgs_path[index1]).convert('RGB')
         img2 = Image.open(self.imgs_path[index2]).convert('RGB')
 

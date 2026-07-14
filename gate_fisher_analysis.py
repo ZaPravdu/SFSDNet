@@ -18,7 +18,7 @@ import seaborn as sns
 from importlib import import_module
 from easydict import EasyDict as edict
 import datasets
-from datasets.dataset import P2RDataset
+from datasets.dataset import TTDADataset
 from datasets.utils import get_testset
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -99,7 +99,7 @@ model.to(DEVICE).eval()
 print("\nLoading test set ...")
 tc = edict(data_mode=DATASET_NAME, dataset_path=DATASET_PATH,
            scene_path=SCENE_PATH, partial=None, shuffle=False)
-loader, ds = get_testset(tc, P2RDataset, cfg_data, training=False)
+loader, ds = get_testset(tc, TTDADataset, cfg_data, training=False)
 print(f"  Samples: {len(ds)}")
 
 # ====== Module classifier ======

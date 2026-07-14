@@ -62,6 +62,10 @@ class DRNetModel(HyperModel):
             logger.info('Injecting gates into DRNet backbone')
             add_gates_to_conv(self.student.Extractor)
 
+        # ── Frame prediction buffer (temporal consistency) ────────
+        self.frame_buffer = {}
+        self._val_count_errors = []
+
     # ── Weight loading ──────────────────────────────────────────────
 
     def _fix_checkpoint_keys(self, state_dict):
@@ -72,15 +76,11 @@ class DRNetModel(HyperModel):
     # ── Loss dispatch ───────────────────────────────────────────────
 
     def calculate_loss(self, data, mode):
-        # Support both collate_fn (2-tuple) and p2r_collate_fn (3-tuple).
-        if len(data) == 3:
-            images, _, targets = data
-        elif len(data) == 2:
-            images, targets = data
-        else:
-            raise ValueError(f'Unexpected batch length: {len(data)}')
+
+        images, strong_img, targets = data
 
         images = images.to(self.device)
+        strong_img = strong_img.to(self.device)
         for t in targets:
             for k, v in t.items():
                 if isinstance(v, torch.Tensor):
@@ -91,17 +91,19 @@ class DRNetModel(HyperModel):
 
         # Three-way dispatch matching P2RModel.
         if self.training_mode == 'supervised':
-            return self._train_loss(images, targets)
+            return self._supervised_loss(images, targets)
         elif self.training_mode == 'unsupervised':
             return self._pseudo_loss(data)
         else:  # semi_supervised — per-batch gt_flag
             gt_flag = targets[0].get('gt_flag', True)
             if gt_flag:
-                return self._train_loss(images, targets)
+                weak_loss = self._supervised_loss(images, targets, push_buffer=True)
+                strong_loss = self._supervised_loss(strong_img, targets, push_buffer=False)
+                return weak_loss + strong_loss
             else:
                 return self._pseudo_loss(data)
 
-    def _train_loss(self, images, targets):
+    def _supervised_loss(self, images, targets, push_buffer=False):
         out = self.student(images, targets)
         pre_map, gt_den, correct_pairs, match_pairs, tp_cnt, _ = out
         counting_mse, matching_loss, hard_loss, _ = self.student.loss
@@ -144,6 +146,12 @@ class DRNetModel(HyperModel):
         self._diag_frame_people = [len(t['points']) for t in targets]
         self._diag_frame_gt_sums = [gt_den[i].detach().sum().item() for i in range(len(gt_den))]
 
+        # ── Push to frame buffer (weak-aug predictions only) ─────────
+        if push_buffer:
+            for i, t in enumerate(targets):
+                key = (t.get('scene_name'), t.get('frame'))
+                self.frame_buffer[key] = pre_map[i].detach().cpu()
+
         return total_loss
 
     def _val_loss(self, images, targets):
@@ -152,15 +160,31 @@ class DRNetModel(HyperModel):
         gt_cnt = gt_den.sum()
         pre_cnt = pre_map.sum()
         mae = (pre_cnt - gt_cnt).abs()
-        mse = (pre_cnt - gt_cnt).pow(2)
+        density_mse = F.mse_loss(pre_map, gt_den)
+
         self.log_dict({
-            'val/mae': mae, 'val/mse': mse,
-            'val/pre_detail': pre_cnt,
-            'val/gt_detail': gt_cnt,
+            'val/mae': mae,
+            'val/density_mse': density_mse,
+            'val/pre_cnt': pre_cnt,
+            'val/gt_cnt': gt_cnt,
         }, on_epoch=True, sync_dist=True)
+
+        # Accumulate for RMSE.
+        self._val_count_errors.append((pre_cnt - gt_cnt).detach())
+
         return {'val_loss': mae}
 
-    # ── Pseudo-supervision ───────────────────────────────────────────
+    def on_train_epoch_start(self):
+        self.frame_buffer.clear()
+        super().on_train_epoch_start()
+
+    def on_validation_epoch_end(self):
+        if self._val_count_errors:
+            sq = torch.stack(self._val_count_errors).pow(2)
+            rmse = sq.mean().sqrt()
+            self.log('val/rmse', rmse, sync_dist=True)
+            self._val_count_errors.clear()
+        super().on_validation_epoch_end()
 
     def _pseudo_loss(self, data):
         """Density-map pseudo-supervision loss.
@@ -181,16 +205,8 @@ class DRNetModel(HyperModel):
             Scalar loss with gradient tracking.
         """
         # ── Unpack ──────────────────────────────────────────────────
-        if len(data) == 3:
-            weak_img, strong_img, targets = data
-        elif len(data) == 2:
-            weak_img, targets = data
-            strong_img = weak_img
-            logger.warning(
-                'DRNetModel._pseudo_loss got 2-tuple batch — weak image '
-                'used as strong augmentation (no real strong aug)')
-        else:
-            raise ValueError(f'Unexpected batch length: {len(data)}')
+  
+        weak_img, strong_img, targets = data
 
         weak_img = weak_img.to(self.device)
         strong_img = strong_img.to(self.device)
@@ -207,6 +223,13 @@ class DRNetModel(HyperModel):
                 self.student.eval()
                 teacher_pre, *_ = self.student(weak_img, targets)
                 self.student.train()
+
+        # ── Buffer replacement ──────────────────────────────────────
+        for i, t in enumerate(targets):
+            key = (t.get('scene_name'), t.get('frame'))
+            cached = self.frame_buffer.get(key)
+            if cached is not None:
+                teacher_pre[i] = cached.to(self.device)
 
         # ── Student: density prediction on strong aug ───────────────
         student_pre, *_ = self.student(strong_img, targets)

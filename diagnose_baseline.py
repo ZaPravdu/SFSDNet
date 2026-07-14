@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import cfg
 from model.VIC import Video_Counter
 import datasets
-from datasets.dataset import P2RDataset
+from datasets.dataset import TTDADataset
 from datasets.utils import get_testset
 
 # ── 配置 ──────────────────────────────────────────────────────────
@@ -58,7 +58,7 @@ tc = edict(
 if SINGLE_SCENE:
     tc.single_scene = SINGLE_SCENE
 
-loader, ds = get_testset(tc, P2RDataset, cfg_data, training=False)
+loader, ds = get_testset(tc, TTDADataset, cfg_data, training=False)
 print(f"Dataset: {len(ds)} samples")
 
 # ── 跑一个 batch ──────────────────────────────────────────────────

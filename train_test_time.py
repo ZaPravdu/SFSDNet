@@ -30,7 +30,7 @@ from importlib import import_module
 
 import datasets
 from config import cfg
-from datasets.dataset import P2RDataset
+from datasets.dataset import TTDADataset
 from datasets.utils import get_per_scene_loaders, build_temporal_datasets
 from model.VIC import Video_Counter
 from model.gate_utils import add_gates_to_conv, add_gates_to_attention
@@ -61,7 +61,7 @@ def parse_args():
     parser.add_argument('--dataset-path', type=str, default=None)
     parser.add_argument('--scene-path', type=str, default=None)
     parser.add_argument('--partial', type=float, default=1.0)
-    parser.add_argument('--shuffle', type=int, default=1, choices=[0, 1])
+    parser.add_argument('--shuffle', type=int, default=0, choices=[0, 1])
     parser.add_argument('--seed', type=int, default=42)
 
     # ── 训练 ──
@@ -240,7 +240,7 @@ def main():
             shuffle=True,
         )
         per_scene_loaders = get_per_scene_loaders(
-            src_config, P2RDataset, cfg_data, training=True)
+            src_config, TTDADataset, cfg_data, training=True)
 
         reg_coeff_dict = gate_variance.estimate_gate_uncertainty(
             raw_model, per_scene_loaders,
@@ -267,10 +267,10 @@ def main():
     train_dataset, val_dataset = build_temporal_datasets(args, cfg_data)
     train_loader = DataLoader(
         train_dataset, shuffle=True, batch_size=1, drop_last=False,
-        num_workers=4, collate_fn=datasets.p2r_collate_fn, persistent_workers=True)
+        num_workers=4, collate_fn=datasets.ttda_collate_fn, persistent_workers=True)
     val_loader = DataLoader(
         val_dataset, shuffle=False, batch_size=1, drop_last=False,
-        num_workers=4, collate_fn=datasets.p2r_collate_fn, persistent_workers=True)
+        num_workers=4, collate_fn=datasets.ttda_collate_fn, persistent_workers=True)
 
     fast_dev_run, wandb_logger = get_logger(args)
     model = model_assembler.get_model(

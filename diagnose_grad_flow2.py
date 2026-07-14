@@ -17,7 +17,7 @@ from model.VIC import Video_Counter
 from model_assembler import add_gates_to_conv, add_gates_to_attention, GatedConv
 from model.gates import BaseGatedModule, GatedAttention, GatedCrossAttention
 import datasets
-from datasets.dataset import P2RDataset
+from datasets.dataset import TTDADataset
 from datasets.utils import get_testset
 
 DATASET_NAME = 'MovingDroneCrowd'
@@ -87,7 +87,7 @@ for name, mod in model.Extractor.named_modules():
 # === 数据 ===
 tc = edict(data_mode=DATASET_NAME, dataset_path=DATASET_PATH,
            scene_path=SCENE_PATH, partial=None, shuffle=False)
-loader, ds = get_testset(tc, P2RDataset, cfg_data, training=False)
+loader, ds = get_testset(tc, TTDADataset, cfg_data, training=False)
 
 N_BATCHES = 20
 for bidx, batch in enumerate(tqdm(loader, desc='Grad flow', total=N_BATCHES)):

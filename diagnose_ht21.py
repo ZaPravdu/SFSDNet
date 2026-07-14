@@ -185,7 +185,7 @@ print("\n" + "=" * 60)
 print("[3/4] 帧对质量分析 (P2RDataset 共享人数分布)")
 print("=" * 60)
 
-from datasets.dataset import P2RDataset
+from datasets.dataset import TTDADataset
 
 scene_names = ['train/HT21-01', 'train/HT21-02', 'train/HT21-03']
 all_share_counts = []
@@ -193,7 +193,7 @@ all_valid_pairs = []
 all_skip_flags = []
 
 for sn in scene_names:
-    ds = P2RDataset(
+    ds = TTDADataset(
         scene_name=sn, base_path=HT21_BASE,
         main_transform=resize, img_transform=img_transform,
         interval=100, skip_flag=False, target=True,

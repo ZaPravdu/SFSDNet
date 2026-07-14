@@ -1,5 +1,5 @@
 from importlib import import_module
-from datasets.dataset import P2RDataset
+from datasets.dataset import TTDADataset
 from datasets.utils import get_testset
 from config import cfg
 import model_assembler
@@ -52,8 +52,8 @@ def de_normalize(img):
 
 if __name__ == '__main__':
     train_cfg = TrainConfig()
-    test_loader, _ = get_testset(train_cfg, P2RDataset)
-    model = model_assembler.P2RModel(train_cfg).cuda()
+    test_loader, _ = get_testset(train_cfg, TTDADataset)
+    model = model_assembler.SDNetModel(train_cfg).cuda()
     for i, data in enumerate(test_loader):
         w_img,s_img, targets = data
     
