@@ -8,7 +8,7 @@ from unittest.mock import patch, MagicMock, Mock
 from misc.otm import den2seq
 from model.VIC import Video_Counter
 from model.hyper_model import HyperModel
-from model.gate_utils import add_gates_to_conv, add_gates_to_attention, load_gate_freeze_config
+from model.gate_utils import add_gates_to_conv, add_gates_to_attention, load_gate_freeze_config, delta_L
 from model.gates import BaseGatedModule
 from model.fisher import compute_fisher
 from types import SimpleNamespace
@@ -180,28 +180,6 @@ class SDNetModel(HyperModel):
 
     # ── Delta-L dynamic regularization ────────────────────────────
 
-    def _assert_default_reg_coeff(self):
-        """Assert all reg_coeff are 1.0.
-
-        Must only be called when no coefficient source is active
-        (caller — on_train_epoch_start — guarantees this via its if/elif/else chain).
-        """
-        for mod in self.student.modules():
-            if not isinstance(mod, BaseGatedModule):
-                continue
-            if hasattr(mod, 'reg_coeff'):
-                assert all(c == 1.0 for c in mod.reg_coeff), (
-                    f"GatedConv reg_coeff must be 1.0 when delta_L_mode is None, "
-                    f"got {mod.reg_coeff}"
-                )
-            for attr in ('q_reg_coeff', 'k_reg_coeff', 'v_reg_coeff'):
-                if hasattr(mod, attr):
-                    coeff = getattr(mod, attr)
-                    assert all(c == 1.0 for c in coeff), (
-                        f"{attr} must be 1.0 when delta_L_mode is None, "
-                        f"got {coeff}"
-                    )
-
     def _validate_gt_sampling(self):
         """Assert GT sampling is configured and enforced correctly."""
         if self.gt_ratios_per_scene <= 0:
@@ -245,40 +223,13 @@ class SDNetModel(HyperModel):
             target = torch.cat([out[1], out[3], out[5]], dim=1).detach()
             return pred, target
 
-        gate_params = [(n, p) for n, p in self.student.named_parameters()
-                       if p.requires_grad and ('gate' in n or 'gate_logit' in n)]
-
+        gate_params = self._get_gate_params()
         fisher, grad_mean = compute_fisher(
             forward_fn, self.train_loader, gate_params, self.device,
             mc_iters=3, quiet=False)
 
         logger.debug('[P2RModel] Delta-L: processed %d samples', processed)
-
-        nm = dict(self.student.named_modules())
-
-        # GatedConv: per-channel coeffs
-        for name in list(fisher.keys()):
-            if name.endswith('.gate'):
-                coeff = delta_L(grad_mean[name], fisher[name], self.delta_L_mode).tolist()
-                parent_path = name.rsplit('.', 1)[0]
-                nm[parent_path].set_reg_coeff(coeff)
-
-        # GatedAttention: group q/k/v under same parent → one set_reg_coeff call
-        attn = {}
-        for name in list(fisher.keys()):
-            if name.endswith('_gate_logit'):
-                parent_path = name.rsplit('.', 1)[0]
-                gate_type = name.rsplit('.', 1)[1]
-                c = delta_L(grad_mean[name], fisher[name], self.delta_L_mode).tolist()
-                attn.setdefault(parent_path, {})[gate_type] = c
-
-        for parent_path, gates in attn.items():
-            nm[parent_path].set_reg_coeff(
-                gates.get('q_gate_logit', [1.0]),
-                gates.get('k_gate_logit', [1.0]),
-                gates.get('v_gate_logit', [1.0]),
-            )
-
+        self._apply_delta_L_coeffs(fisher, grad_mean)
         self.student.train()
 
     # ── Loss functions ────────────────────────────────────────────
@@ -409,23 +360,6 @@ class SDNetModel(HyperModel):
     def get_student_model(self):
         return self.student
 
-def delta_L(grad, fisher, mode='original'):
-    """Compute per-gate-channel Delta L coefficient.
-
-    mode='original':  -g² / F   (original delta loss formula)
-    mode='exp':        exp(-g² / F)  (bounded score in (0, 1])
-    mode='inv':        F / g²   (inverted / negative-inverse formula)
-
-    Uses reshape(-1) so single-element dimensions don't collapse to scalar.
-    """
-    g = grad.reshape(-1)
-    f = fisher.reshape(-1)
-    if mode == 'exp':
-        return torch.exp(-(g ** 2) / (f + 1e-12))
-    if mode == 'inv':
-        return f / (g ** 2 + 1e-12)
-    # default / 'original'
-    return -(g ** 2) / (f + 1e-12)
 
 
 # ── Debug visualization ────────────────────────────────────────────────────

@@ -37,10 +37,6 @@ class Video_Individual_Counter(nn.Module):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.get_ROI_and_MatchInfo = get_ROI_and_MatchInfo( self.dataset_cfg .TRAIN_SIZE, self.radius, feature_scale=self.feature_scale)
 
-    @property
-    def loss(self):
-        return  self.counting_mse_loss, self.batch_match_loss, self.batch_hard_loss, self.batch_norm_loss
-
     def KPI_cal(self,match_gt,scores,target_pair):
         self.match_pairs_cnt = match_gt['un_a'].size(0) + match_gt['un_b'].size(0) + match_gt['a2b'].size(0)
         scores[-1, -1] = 0
@@ -74,16 +70,12 @@ class Video_Individual_Counter(nn.Module):
         gt_den = self.Gaussian(dot_map)
 
         assert pre_map.size() == gt_den.size()
-        self.counting_mse_loss = F.mse_loss(pre_map, gt_den * self.dataset_cfg.DEN_FACTOR)
-        pre_map = pre_map/self.dataset_cfg.DEN_FACTOR
+        pre_map = pre_map / self.dataset_cfg.DEN_FACTOR
         #==============================================================
 
         matched_results = {'matches0': [], 'matches1': [],'matching_scores0': [],'matching_scores1': [], 'gt_matched': [],
                            'gt_count_diff': 0,'pre_count_diff': 0}
 
-        self.batch_match_loss = torch.tensor(0.).to(self.device)
-        self.batch_hard_loss = torch.tensor(0.).to(self.device)
-        self.batch_norm_loss = torch.tensor(0.).to(self.device)
         match_loss =[]
         hard_loss = []
         norm_loss = []
@@ -171,13 +163,15 @@ class Video_Individual_Counter(nn.Module):
             matched_results['pre_count_diff'] += pre_map[pair_idx * 2 + 1].sum() - (indices1 > -1).sum()
 
         if len(match_loss)>0:
-            self.batch_match_loss =  torch.mean(torch.cat(match_loss))
+            batch_match_loss = torch.mean(torch.cat(match_loss))
+        else:
+            batch_match_loss = torch.tensor(0., device=self.device)
         if len(hard_loss)>0:
-            self.batch_hard_loss = torch.mean(torch.cat(hard_loss))
-        if len(norm_loss)>0:
-            self.batch_norm_loss = torch.mean(torch.stack(norm_loss))
+            batch_hard_loss = torch.mean(torch.cat(hard_loss))
+        else:
+            batch_hard_loss = torch.tensor(0., device=self.device)
 
-        return pre_map, gt_den, correct_pairs_cnt, match_pairs_cnt, TP_cnt, matched_results
+        return pre_map, gt_den, batch_match_loss, batch_hard_loss, correct_pairs_cnt, match_pairs_cnt, TP_cnt, matched_results
 
     def val_forward(self,img,target,frame_signal=None):
         for i in range(len(target)):

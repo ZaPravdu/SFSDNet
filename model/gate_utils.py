@@ -82,3 +82,40 @@ def load_gate_freeze_config(model, json_path):
                 for h in heads:
                     mask[h] = 1.0
                 setattr(mod, f'{gate_type}_gate_mask', mask)
+
+
+def delta_L(grad, fisher, mode='original'):
+    """Compute per-gate-channel Delta L coefficient.
+
+    Contract:
+        Type: pure function
+        Input: grad [N], fisher [N], mode in {original, exp, inv}
+        Output: [N] tensor — per-channel coefficient
+        Side effects: none
+
+    mode='original':  -g² / F   (original delta loss formula, negative)
+    mode='exp':        exp(-g² / F)  (bounded score in (0, 1])
+    mode='inv':        F / g²   (inverted / negative-inverse formula)
+    """
+    g = grad.reshape(-1)
+    f = fisher.reshape(-1)
+    if mode == 'exp':
+        return torch.exp(-(g ** 2) / (f + 1e-12))
+    if mode == 'inv':
+        return f / (g ** 2 + 1e-12)
+    return -(g ** 2) / (f + 1e-12)
+
+
+def compute_density_loss(pred, target, den_factor):
+    """MSE loss between predicted and target density maps, both scaled.
+
+    Contract:
+        Type: pure function
+        Input: pred [B,1,H,W] — normalized density map (÷den_factor)
+               target [B,1,H,W] — GT Gaussian density (raw, unscaled)
+               den_factor — scaling factor (usually 200)
+        Output: scalar tensor, MSE(pred * den, target * den)
+        Side effects: none
+    """
+    return torch.nn.functional.mse_loss(
+        pred * den_factor, target * den_factor)

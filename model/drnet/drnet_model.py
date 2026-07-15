@@ -13,9 +13,10 @@ import torch
 import torch.nn.functional as F
 
 from misc.KPI_pool import Task_KPI_Pool
-from model.gate_utils import add_gates_to_conv
+from model.gate_utils import add_gates_to_conv, delta_L
 from model.drnet.vic import Video_Individual_Counter
 from model.hyper_model import HyperModel
+from model.fisher import compute_fisher
 
 logger = logging.getLogger(__name__)
 
@@ -145,12 +146,15 @@ class DRNetModel(HyperModel):
 
     def _supervised_loss(self, images, targets, push_buffer=False):
         out = self.student(images, targets)
-        pre_map, gt_den, correct_pairs, match_pairs, tp_cnt, _ = out
-        counting_mse, matching_loss, hard_loss, _ = self.student.loss
+        pred_density, gt_density, match_loss, hard_loss, correct_pairs, match_pairs, tp_cnt, _ = out
 
-        # KPI-weighted multi-task loss.
-        pre_cnt = pre_map.sum()
-        gt_cnt = gt_den.sum()
+        # Density MSE — both sides scaled by den_factor (SDNet convention)
+        counting_mse = F.mse_loss(
+            pred_density * self.den_factor, gt_density * self.den_factor)
+
+        # KPI-weighted multi-task loss (match_loss + hard_loss = 1 unit).
+        pre_cnt = pred_density.sum()
+        gt_cnt = gt_density.sum()
         self.task_KPI.add({
             'den': {'gt_cnt': gt_cnt,
                     'mae': max(0., float(gt_cnt - (gt_cnt - pre_cnt).abs()))},
@@ -158,7 +162,8 @@ class DRNetModel(HyperModel):
         })
         kpi = self.task_KPI.query()
 
-        losses = torch.stack([counting_mse, matching_loss + hard_loss])
+        matching_total = match_loss + hard_loss
+        losses = torch.stack([counting_mse, matching_total])
         weight = torch.tensor([kpi['den'], kpi['match']]).to(losses.device)
         weight = -(1 - weight) * torch.log(weight + 1e-8)
         weight = (weight / weight.sum()).detach()
@@ -169,23 +174,23 @@ class DRNetModel(HyperModel):
 
         self.log_dict({
             'train_loss': total_loss, 'train/counting_mse': counting_mse,
-            'train/matching_loss': matching_loss, 'train/hard_loss': hard_loss,
+            'train/matching_loss': match_loss, 'train/hard_loss': hard_loss,
             'train/kpi_den': kpi['den'], 'train/kpi_match': kpi['match'],
         }, on_step=True, on_epoch=True, sync_dist=True)
 
         # ── 记录诊断数据（供 diagnose log 读取）──
-        self._diag_pre_global_sum = pre_map.detach().sum().item()
-        self._diag_gt_global_sum = gt_den.detach().sum().item()
-        self._diag_decoder_raw_sum = (pre_map.detach() * self.den_factor).sum().item()
-        self._diag_gt_scaled_sum = (gt_den.detach() * self.den_factor).sum().item()
+        self._diag_pre_global_sum = pred_density.detach().sum().item()
+        self._diag_gt_global_sum = gt_density.detach().sum().item()
+        self._diag_decoder_raw_sum = (pred_density.detach() * self.den_factor).sum().item()
+        self._diag_gt_scaled_sum = (gt_density.detach() * self.den_factor).sum().item()
         self._diag_frame_people = [len(t['points']) for t in targets]
-        self._diag_frame_gt_sums = [gt_den[i].detach().sum().item() for i in range(len(gt_den))]
+        self._diag_frame_gt_sums = [gt_density[i].detach().sum().item() for i in range(len(gt_density))]
 
         # ── Push to frame buffer (weak-aug predictions only) ─────────
         if push_buffer:
             for i, t in enumerate(targets):
                 key = (t.get('scene_name'), t.get('frame'))
-                self.frame_buffer[key] = pre_map[i].detach().cpu()
+                self.frame_buffer[key] = pred_density[i].detach().cpu()
 
         return total_loss
 
@@ -220,6 +225,54 @@ class DRNetModel(HyperModel):
             self.log('val/rmse', rmse, sync_dist=True)
             self._val_count_errors.clear()
         super().on_validation_epoch_end()
+
+    # ── Delta-L dynamic regularisation ─────────────────────────────
+
+    def _build_forward_fn(self):
+        """构造 compute_fisher 用的 forward_fn 闭包。
+
+        Contract:
+            Type: orchestration (closure)
+            Input: batch (weak_img, _, targets)
+            Output: (pred_density, gt_density) — 归一化密度图, raw GT
+            Skips: batches where gt_flag=False (unlabeled)
+        """
+        def forward_fn(batch):
+            weak_img, _, targets = batch
+            weak_img = weak_img.to(self.device)
+            if self.training_mode != 'supervised' \
+                    and not targets[0].get('gt_flag', True):
+                logger.warning('[DRNetModel] forward_fn: skipping unlabeled batch (gt_flag=False)')
+                return None
+            out = self.student(weak_img, targets)
+            return out[0], out[1].detach()
+        return forward_fn
+
+    def _compute_delta_L(self):
+        """编排：Fisher estimation → reg_coeff 写入。
+
+        Contract:
+            Type: orchestration
+            Calls: _build_forward_fn → _get_gate_params → compute_fisher → _apply_delta_L_coeffs
+            Side effects: eval/train toggle, reg_coeff 修改
+        """
+        if not self.inject_gate:
+            logger.warning('[DRNetModel] inject_gate=False, skipping delta-L')
+            return
+        if self.delta_L_mode is None:
+            logger.warning('[DRNetModel] delta_L_mode=None, skipping delta-L')
+            return
+        self.student.eval()
+        logger.info('[DRNetModel] Computing delta-L regularization')
+
+        forward_fn = self._build_forward_fn()
+        gate_params = self._get_gate_params()
+        fisher, grad_mean = compute_fisher(
+            forward_fn, self.train_loader, gate_params,
+            self.device, mc_iters=3, quiet=False)
+
+        self._apply_delta_L_coeffs(fisher, grad_mean)
+        self.student.train()
 
     def _pseudo_loss(self, data):
         """Density-map pseudo-supervision loss.
@@ -395,20 +448,16 @@ class TestDRNetModelTrainingStep:
             cfg_data = SimpleNamespace(DEN_FACTOR=200)
             m = DRNetModel(cfg, cfg_data, _make_train_cfg())
 
-            # Student forward → 返回真实 Tensor，这样 pre_map.sum() 等操作正常工作
+            # Student forward → 8 元组（VIC 新格式）
             m.student.return_value = (
-                torch.tensor([[10.0]]),   # pre_map → sum=10
-                torch.tensor([[20.0]]),   # gt_den → sum=20
+                torch.tensor([[10.0]]),   # pred_density → sum=10
+                torch.tensor([[20.0]]),   # gt_density → sum=20
+                torch.tensor(0.5),         # batch_match_loss
+                torch.tensor(0.2),         # batch_hard_loss
                 torch.tensor(5.0),         # correct_pairs
                 torch.tensor(6.0),         # match_pairs
                 torch.tensor(4.0),         # tp_cnt
                 {},                        # matched_results
-            )
-            m.student.loss = (
-                torch.tensor(1.0),  # counting_mse
-                torch.tensor(0.5),  # matching_loss
-                torch.tensor(0.2),  # hard_loss
-                torch.tensor(0.0),  # norm_loss
             )
             # KPI query → 返回真实 float，避免 torch.stack 对 MagicMock 报错
             m.task_KPI.query.return_value = {'den': 0.5, 'match': 0.5}

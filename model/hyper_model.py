@@ -5,6 +5,7 @@ import logging
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from diagnose_logger import DiagnoseLogger
 from model.gates import BaseGatedModule
+from model.gate_utils import delta_L
 
 logger = logging.getLogger(__name__)
 
@@ -241,13 +242,70 @@ class HyperModel(LightningModule):
             self._assert_default_reg_coeff()
         self.diagnose.on_epoch_start(self)
 
+    # ── Gate-param helpers (shared by SDNetModel & DRNetModel) ──────
+
+    def _get_gate_params(self):
+        """筛出所有 trainable gate 参数。
+
+        Contract:
+            Type: state function (read)
+            Input: none (reads self.student.named_parameters)
+            Output: list of (name, param) where name contains 'gate' and requires_grad
+            Side effects: none
+        """
+        return [(n, p) for n, p in self.student.named_parameters()
+                if p.requires_grad and ('gate' in n or 'gate_logit' in n)]
+
+    def _apply_delta_L_coeffs(self, fisher, grad_mean):
+        """把 Delta L coeff 写到 BaseGatedModule 的 reg_coeff。
+
+        Contract:
+            Type: state function (write)
+            Input: fisher_dict, grad_mean_dict from compute_fisher
+            Side effects: calls set_reg_coeff on each BaseGatedModule
+            Supports: GatedConv (.gate) and GatedAttention (_gate_logit)
+        """
+        nm = dict(self.student.named_modules())
+        for name in fisher:
+            if name not in grad_mean:
+                continue
+            coeff = delta_L(grad_mean[name], fisher[name], self.delta_L_mode)
+            if name.endswith('.gate'):
+                parent_path = name.rsplit('.', 1)[0]
+                nm[parent_path].set_reg_coeff(coeff.tolist())
+            elif name.endswith('_gate_logit'):
+                parent_path = name.rsplit('.', 1)[0]
+                gate_type = name.rsplit('.', 1)[1]  # q_gate_logit / k_gate_logit / v_gate_logit
+                mod = nm[parent_path]
+                attrs = {
+                    'q_gate_logit': 'q_reg_coeff',
+                    'k_gate_logit': 'k_reg_coeff',
+                    'v_gate_logit': 'v_reg_coeff',
+                }
+                setattr(mod, attrs[gate_type], coeff.tolist())
+
     def _compute_delta_L(self):
-        """Override when delta_L_mode is active (e.g. P2RModel)."""
+        """Override when delta_L_mode is active (subclass provides _build_forward_fn)."""
         pass
 
     def _assert_default_reg_coeff(self):
-        """Override when BaseGatedModule reg_coeff needs verification (e.g. P2RModel)."""
-        pass
+        """断言所有 BaseGatedModule 的 reg_coeff 为 1.0。
+
+        Contract:
+            Type: state function (read)
+            Side effects: raises AssertionError if any reg_coeff != 1.0
+        """
+        for mod in self.student.modules():
+            if hasattr(mod, 'reg_coeff'):
+                assert all(c == 1.0 for c in mod.reg_coeff), (
+                    f"reg_coeff must be 1.0 when delta_L_mode is None, "
+                    f"got {mod.reg_coeff}")
+            for attr in ('q_reg_coeff', 'k_reg_coeff', 'v_reg_coeff'):
+                if hasattr(mod, attr):
+                    coeff = getattr(mod, attr)
+                    assert all(c == 1.0 for c in coeff), (
+                        f"{attr} must be 1.0 when delta_L_mode is None, "
+                        f"got {coeff}")
 
     def on_train_epoch_end(self):
         self.diagnose.on_epoch_end(self)
