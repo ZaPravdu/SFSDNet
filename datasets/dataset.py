@@ -503,6 +503,12 @@ class TTDADataset(TestDataset):
         n_pairs = len(self)
         if self.gt_ratio <= 0:
             return [False] * n_pairs
+        if self.gt_ratio >= 1:
+            return [True] * n_pairs
+        if self.gt_ratio > 0.5:
+            # 反标：按未标注比例取步长，i % step != 0 为 labeled
+            unlabeled_step = max(1, int(1 / (1 - self.gt_ratio)))
+            return [i % unlabeled_step != 0 for i in range(n_pairs)]
         step = max(1, int(1 / self.gt_ratio))
         return [i % step == 0 for i in range(n_pairs)]
 
