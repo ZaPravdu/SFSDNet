@@ -124,7 +124,7 @@ def build_temporal_datasets(config, cfg_data):
         supervised  mode → only labeled frame pairs.
         semi_supervised mode → labeled + unlabeled (full set).
     val_dataset : ConcatDataset
-        Always → only unlabeled frame pairs (no GT leakage).
+        Always → labeled + unlabeled (full set, batch_size=1).
     """
     # ── Transforms ────────────────────────────────────────────────
     main_transform = datasets.train_resize_transform(
@@ -211,7 +211,13 @@ def build_temporal_datasets(config, cfg_data):
         f"No unlabeled samples for any scene — gt_ratio={gt_ratio} may be 1.0"
 
     # ── Assemble train / val ──────────────────────────────────────
-    val_dataset = torch.utils.data.ConcatDataset(unlabeled_sets)
+    all_val_sets = []
+    if labeled_sets:
+        all_val_sets.extend(labeled_sets)
+    if unlabeled_sets:
+        all_val_sets.extend(unlabeled_sets)
+    assert all_val_sets, "No validation samples available"
+    val_dataset = torch.utils.data.ConcatDataset(all_val_sets)
 
     if config.training_mode == 'supervised':
         assert labeled_sets, \

@@ -69,6 +69,8 @@ class DRNetModel(HyperModel):
         # ── Frame prediction buffer (temporal consistency) ────────
         self.frame_buffer = {}
         self._val_count_errors = []
+        self._val_labeled_errors = []
+        self._val_unlabeled_errors = []
 
     # ── Weight loading ──────────────────────────────────────────────
 
@@ -202,15 +204,27 @@ class DRNetModel(HyperModel):
         mae = (pre_cnt - gt_cnt).abs()
         density_mse = F.mse_loss(pre_map, gt_den)
 
-        self.log_dict({
+        log_dict = {
             'val/mae': mae,
             'val/density_mse': density_mse,
             'val/pre_cnt': pre_cnt,
-            'val/gt_cnt': gt_cnt,
-        }, on_epoch=True, sync_dist=True)
+        }
 
-        # Accumulate for RMSE.
-        self._val_count_errors.append((pre_cnt - gt_cnt).detach())
+        gt_flag = targets[0].get('gt_flag', True)
+        prefix = 'val_labeled' if gt_flag else 'val_unlabeled'
+        log_dict[f'{prefix}/mae'] = mae
+        log_dict[f'{prefix}/density_mse'] = density_mse
+        log_dict[f'{prefix}/pre_cnt'] = pre_cnt
+
+        self.log_dict(log_dict, on_epoch=True, sync_dist=True)
+
+        # Accumulate for RMSE (per group).
+        err = (pre_cnt - gt_cnt).detach()
+        self._val_count_errors.append(err)
+        if gt_flag:
+            self._val_labeled_errors.append(err)
+        else:
+            self._val_unlabeled_errors.append(err)
 
         return {'val_loss': mae}
 
@@ -219,11 +233,15 @@ class DRNetModel(HyperModel):
         super().on_train_epoch_start()
 
     def on_validation_epoch_end(self):
-        if self._val_count_errors:
-            sq = torch.stack(self._val_count_errors).pow(2)
-            rmse = sq.mean().sqrt()
-            self.log('val/rmse', rmse, sync_dist=True)
-            self._val_count_errors.clear()
+        def _log_rmse(errors, key):
+            if errors:
+                sq = torch.stack(errors).pow(2)
+                self.log(key, sq.mean().sqrt(), sync_dist=True)
+                errors.clear()
+
+        _log_rmse(self._val_count_errors, 'val/rmse')
+        _log_rmse(self._val_labeled_errors, 'val_labeled/rmse')
+        _log_rmse(self._val_unlabeled_errors, 'val_unlabeled/rmse')
         super().on_validation_epoch_end()
 
     # ── Delta-L dynamic regularisation ─────────────────────────────
