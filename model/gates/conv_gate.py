@@ -29,10 +29,8 @@ class GatedConv(BaseGatedModule):
 
     def _reg_total(self, fn):
         gate = 2 * torch.sigmoid(self.gate)
-        total = torch.tensor(0., device=gate.device)
-        for i in range(len(gate)):
-            total = total + fn(gate[i] - self.prior_mean[i]) * self.reg_coeff[i]
-        return total.squeeze()
+        coeff = torch.tensor(self.reg_coeff, device=gate.device)
+        return (fn(gate - self.prior_mean) * coeff).sum()
 
     def l2_regularization(self):
         return self._reg_total(lambda d: d.pow(2))
