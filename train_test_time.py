@@ -94,7 +94,7 @@ def parse_args():
     # ── Gate 控制 ──
     parser.add_argument('--inject-gate', type=int, default=1, choices=[0, 1])
     parser.add_argument('--gate-mode', type=str, default='independent',
-                        choices=['independent', 'input_dependent'])
+                        choices=['independent', 'input_dependent', 'channel_mixture'])
 
     # ── 方差正则化（Stage 1） ──
     parser.add_argument('--source-scene-path', type=str, default=None)
@@ -271,7 +271,7 @@ def main():
     # ====================================================================
     train_dataset, val_dataset = build_temporal_datasets(args, cfg_data)
     train_loader = DataLoader(
-        train_dataset, shuffle=True, batch_size=1, drop_last=False,
+        train_dataset, shuffle=False, batch_size=1, drop_last=False,
         num_workers=4, collate_fn=datasets.ttda_collate_fn, persistent_workers=True)
     val_loader = DataLoader(
         val_dataset, shuffle=False, batch_size=1, drop_last=False,
