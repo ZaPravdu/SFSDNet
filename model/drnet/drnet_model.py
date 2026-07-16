@@ -112,8 +112,9 @@ class DRNetModel(HyperModel):
             return
         if self.reg_mode in ('l1', 'l2'):
             logger.info('Injecting gates into DRNet Extractor')
+            gate_mode = getattr(self, 'gate_mode', 'independent')
             for name in ['Extractor']:
-                add_gates_to_conv(getattr(self.student, name))
+                add_gates_to_conv(getattr(self.student, name), gate_mode=gate_mode)
         # DRNet has no Attention / CrossAttention — attention gate injection skipped.
 
     # ── Loss dispatch ───────────────────────────────────────────────

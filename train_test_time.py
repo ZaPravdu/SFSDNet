@@ -93,6 +93,8 @@ def parse_args():
 
     # ── Gate 控制 ──
     parser.add_argument('--inject-gate', type=int, default=1, choices=[0, 1])
+    parser.add_argument('--gate-mode', type=str, default='independent',
+                        choices=['independent', 'input_dependent'])
 
     # ── 方差正则化（Stage 1） ──
     parser.add_argument('--source-scene-path', type=str, default=None)
