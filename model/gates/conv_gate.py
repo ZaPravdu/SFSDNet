@@ -60,6 +60,30 @@ class GatedConv(BaseGatedModule):
         # input_dependent: pool to 3×3 → conv → (B, C_out, 1, 1)
         return self.gate(F.adaptive_avg_pool2d(x, 3))
 
+    def get_gate_values(self):
+        """Return current per-channel gate values, detached 1D (C_out,).
+
+        ``independent``: 2·sigmoid(self.gate)
+        ``input_dependent``: _gate_buffer averaged over batch/spatial dims
+        Returns None if no forward has been run yet (input_dependent only).
+        """
+        if self.gate_mode == 'independent':
+            return (2 * torch.sigmoid(self.gate)).detach()
+        if self._gate_buffer is None:
+            return None
+        return self._gate_buffer.mean(dim=(0, 2, 3)).detach()
+
+    @property
+    def gate_grad(self):
+        """门控梯度（backward 后可用）。
+
+        ``independent``: self.gate.grad — shape (C_out,)
+        ``input_dependent``: None — 无逐通道参数，跳过逐通道梯度分析
+        """
+        if self.gate_mode == 'independent':
+            return self.gate.grad
+        return None
+
     def forward(self, x):
         y = self.conv(x)
         gate_logits = self.get_gate_logits(x)

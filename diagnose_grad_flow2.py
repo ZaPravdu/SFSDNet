@@ -47,21 +47,10 @@ for n, p in model.named_parameters():
     p.requires_grad = any(k in n for k in ['.gate'])
 model.to(DEVICE).eval()
 
-# === 通道级 Hook：收集每个 gate[i] 的梯度绝对值 ===
+# === 通道级 Gate 梯度收集：backward 后直接读 gate_grad 属性 ===
 # {name: {channel: [batch_grad]}}
 chan_grads = defaultdict(lambda: defaultdict(list))
-
-def make_channel_hook(name, gconv):
-    """为每个 gate[i] 注册 hook"""
-    def bw_hook(grad):
-        g = grad.detach().cpu().float()  # shape (C,)
-        for c in range(g.shape[0]):
-            chan_grads[name][c].append(g[c].item())
-    gconv.gate.register_hook(bw_hook)
-
-for n, m in model.named_modules():
-    if isinstance(m, GatedConv):
-        make_channel_hook(n, m)
+gconv_list = [(n, m) for n, m in model.named_modules() if isinstance(m, GatedConv)]
 
 # === Focused gradient path tracing ===
 # 在关键位置注册 hook 看梯度大小
@@ -100,6 +89,13 @@ for bidx, batch in enumerate(tqdm(loader, desc='Grad flow', total=N_BATCHES)):
     d = cfg_data.DEN_FACTOR
     loss = (F.mse_loss(pg*d, gg*d) + 10*F.mse_loss(ps*d, gs*d) + F.mse_loss(pio*d, gio*d)) / 3
     loss.backward()
+
+    for name, m in gconv_list:
+        g = m.gate_grad
+        if g is not None:
+            g = g.detach().cpu().float()
+            for c in range(g.shape[0]):
+                chan_grads[name][c].append(g[c].item())
 
 for h in hooks:
     h.remove()

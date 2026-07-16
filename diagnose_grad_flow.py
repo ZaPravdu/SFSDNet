@@ -45,21 +45,9 @@ for n, p in model.named_parameters():
     p.requires_grad = any(k in n for k in ['.gate'])
 model.to(DEVICE).eval()
 
-# === Gradient hook 系统：在每个 GatedConv 后收集 gate.grad + 输入/输出统计 ===
-grad_stats = {}  # name → {'gate_grad_norm': [], 'output_alive_frac': [], 'output_mean_abs': []}
-
-def make_hooks(name, gconv):
-    """给 GatedConv.gate 注册 backward hook, 收集进入 gate 的梯度"""
-    def bw_hook(grad):
-        if name not in grad_stats:
-            grad_stats[name] = {'gate_grad_norm': [], 'gate_grad_absmean': []}
-        grad_stats[name]['gate_grad_norm'].append(grad.norm().item())
-        grad_stats[name]['gate_grad_absmean'].append(grad.abs().mean().item())
-    gconv.gate.register_hook(bw_hook)
-
-for n, m in model.named_modules():
-    if isinstance(m, GatedConv):
-        make_hooks(n, m)
+# === 收集 gate 梯度统计：backward 后直接读 gate_grad 属性 ===
+grad_stats = {}  # name → {'gate_grad_norm': [], 'gate_grad_absmean': []}
+gconv_list = [(n, m) for n, m in model.named_modules() if isinstance(m, GatedConv)]
 
 # === 数据 ===
 tc = edict(data_mode=DATASET_NAME, dataset_path=DATASET_PATH,
@@ -77,6 +65,16 @@ for bidx, batch in enumerate(tqdm(loader, desc='Grad flow', total=10)):
     d = cfg_data.DEN_FACTOR
     loss = (F.mse_loss(pg*d, gg*d) + 10*F.mse_loss(ps*d, gs*d) + F.mse_loss(pio*d, gio*d)) / 3
     loss.backward()
+
+    # 收集 gate 梯度
+    for n, m in gconv_list:
+        g = m.gate_grad
+        if g is None:
+            continue
+        if n not in grad_stats:
+            grad_stats[n] = {'gate_grad_norm': [], 'gate_grad_absmean': []}
+        grad_stats[n]['gate_grad_norm'].append(g.norm().item())
+        grad_stats[n]['gate_grad_absmean'].append(g.abs().mean().item())
 
 # 打印梯度统计（按模块分组）
 print("\n" + "=" * 85)

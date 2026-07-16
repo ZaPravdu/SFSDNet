@@ -96,11 +96,13 @@ class DiagnoseLogger:
             prefix = n.split('.')[0] if '.' in n else n
 
             if isinstance(m, GatedConv):
-                g = 2 * torch.sigmoid(m.gate)
+                g = m.get_gate_values()
+                if g is None:
+                    continue
                 key = f"{prefix}(GatedConv)"
                 if key not in groups:
                     groups[key] = []
-                groups[key].extend(g.detach().cpu().tolist())
+                groups[key].extend(g.cpu().tolist())
 
             elif isinstance(m, GatedAttention):
                 for gate_name in ['q_gate_logit', 'k_gate_logit', 'v_gate_logit']:
