@@ -78,7 +78,8 @@ class GatedConv(BaseGatedModule):
         if self.gate_mode == 'independent':
             return (2 * torch.sigmoid(self.gate)).detach()
         if self.gate_mode == 'channel_mixture':
-            return self.gate.weight.squeeze().diag().detach()
+            C_out = self.gate.weight.shape[0]
+            return self.gate.weight.view(C_out, C_out).diag().detach()
         if self._gate_buffer is None:
             return None
         return self._gate_buffer.mean(dim=(0, 2, 3)).detach()
@@ -96,7 +97,8 @@ class GatedConv(BaseGatedModule):
         if self.gate_mode == 'channel_mixture':
             if self.gate.weight.grad is None:
                 return None
-            return self.gate.weight.grad.squeeze().diag()
+            C_out = self.gate.weight.shape[0]
+            return self.gate.weight.grad.view(C_out, C_out).diag()
         return None
 
     def forward(self, x):
@@ -112,7 +114,7 @@ class GatedConv(BaseGatedModule):
         if self.gate_mode == 'channel_mixture':
             C_out = self.gate.weight.shape[0]
             I = torch.eye(C_out, device=self.gate.weight.device)
-            w = self.gate.weight.squeeze()  # (C_out, C_out)
+            w = self.gate.weight.view(C_out, C_out)
             diff = w - I
             coeff = torch.tensor(self.reg_coeff, device=diff.device).mean()
             return fn(diff).sum() * coeff
