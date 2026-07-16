@@ -44,6 +44,9 @@ class VGG16_FPN(nn.Module):
             nn.Conv2d(16, 1, kernel_size=1, stride=1, padding=0),
             nn.ReLU(inplace=True)
         )
+        # ── 瓶颈特征缓存（forward 中保存在 loc_head 之前）────────────
+        self._bottleneck_feat = None
+
         self.feature_head = nn.Sequential(
             nn.Dropout2d(0.2),
             ResBlock(in_dim=384, out_dim=384, dilation=0, norm="bn"),
@@ -67,6 +70,8 @@ class VGG16_FPN(nn.Module):
         f = self.neck(f_list)
         f =torch.cat([f[0],  F.interpolate(f[1],scale_factor=2,mode='bilinear',align_corners=True),
                       F.interpolate(f[2],scale_factor=4, mode='bilinear',align_corners=True)], dim=1)
+        # ── 瓶颈特征：loc_head（密度解码器）的唯一输入 ────────────────
+        self._bottleneck_feat = f
 
         x = self.loc_head(f)
 
@@ -75,6 +80,10 @@ class VGG16_FPN(nn.Module):
                       F.interpolate(f[2],scale_factor=4, mode='bilinear',align_corners=True)], dim=1)
         feature = self.feature_head(f)
         return feature, x
+
+    def get_bottleneck_feature(self):
+        """返回瓶颈特征图张量（loc_head 的输入），若未执行 forward 则返回 None。"""
+        return self._bottleneck_feat
 
 
 

@@ -225,6 +225,20 @@ class DRNetModel(HyperModel):
         mae = (pre_cnt - gt_cnt).abs()
         density_mse = F.mse_loss(pre_map, gt_den)
 
+        # ── Diagnose: BN running stats 失配检测 ──────────────────────────────
+        #   在 train() 模式下 rerun backbone 拿密度图，与 eval() 对比
+        #   如果 train_mode 的指标显著更好 → BN running stats 是根因
+        was_training = self.student.training
+        self.student.train()
+        with torch.no_grad():
+            _, pre_map_raw = self.student.Extractor(images)
+            pre_map_train = pre_map_raw / self.student.dataset_cfg.DEN_FACTOR
+            train_pre_cnt = pre_map_train.sum()
+            train_mae = (train_pre_cnt - gt_cnt).abs()
+            train_mse = F.mse_loss(pre_map_train, gt_den)
+        if not was_training:
+            self.student.eval()
+
         log_dict = {
             'val/mae': mae,
             'val/density_mse': density_mse,
@@ -245,6 +259,12 @@ class DRNetModel(HyperModel):
             'diag/val_pre_map_zero_fraction': (pre_map < 1e-6).float().mean().detach(),
             'diag/val_pre_map_min': pre_map.min().detach(),
             'diag/val_pre_map_max': pre_map.max().detach(),
+            # ── BN 失配诊断: train-mode 版的对应指标 ─────────────────────────
+            'diag/val_train_pre_gt_ratio': (train_pre_cnt / (gt_cnt + 1e-12)).detach(),
+            'diag/val_train_pre_map_mean': pre_map_train.mean().detach(),
+            'diag/val_train_pre_map_std': pre_map_train.std().detach(),
+            'diag/val_train_mae': train_mae.detach(),
+            'diag/val_train_density_mse': train_mse.detach(),
         })
 
         self.log_dict(log_dict, on_epoch=True, sync_dist=True)
@@ -398,6 +418,15 @@ class DRNetModel(HyperModel):
         }, on_step=True, on_epoch=True, sync_dist=True)
 
         return loss
+
+    # ── Bottleneck feature access ─────────────────────────────────
+
+    def get_bottleneck_feature(self):
+        """返回瓶颈特征图张量（loc_head 的输入），用于特征级伪标签监督。
+
+        形状 ``[B, 576, H/4, W/4]``。需在 forward 执行后调用。
+        """
+        return self.student.get_bottleneck_feature()
 
     # ── Optimiser ──────────────────────────────────────────────────
 

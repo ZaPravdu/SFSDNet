@@ -173,6 +173,14 @@ class Video_Individual_Counter(nn.Module):
 
         return pre_map, gt_den, batch_match_loss, batch_hard_loss, correct_pairs_cnt, match_pairs_cnt, TP_cnt, matched_results
 
+    def get_bottleneck_feature(self):
+        """返回瓶颈特征图张量（密度解码器 loc_head 的输入）。
+
+        该特征图是 backbone FPN 各尺度融合后的 576 通道张量，
+        形状为 ``[B, 576, H/4, W/4]``。forward 执行后调用才有效。
+        """
+        return self.Extractor.get_bottleneck_feature()
+
     def val_forward(self,img,target,frame_signal=None):
         for i in range(len(target)):
             for key,data in target[i].items():
