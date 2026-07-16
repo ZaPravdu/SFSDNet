@@ -179,6 +179,26 @@ class DRNetModel(HyperModel):
             'train_loss': total_loss, 'train/counting_mse': counting_mse,
             'train/matching_loss': match_loss, 'train/hard_loss': hard_loss,
             'train/kpi_den': kpi['den'], 'train/kpi_match': kpi['match'],
+            # ── Diagnose: KPI weight values ─────────────────────────────────
+            'diag/weight_den': weight[0],
+            'diag/weight_match': weight[1],
+            # ── Diagnose: per-task contribution to total loss ────────────────
+            'diag/contrib_counting': (weight[0] * counting_mse).detach(),
+            'diag/contrib_matching': (weight[1] * matching_total).detach(),
+            # ── Diagnose: density map 统计（崩溃检测）──────────────────────────
+            #   pre_gt_ratio 接近 1 → 总人数预测正常
+            #   pre_map_mean / pre_map_std 异常 → density head 输出退化
+            'diag/pre_cnt': pre_cnt.detach(),
+            'diag/gt_cnt': gt_cnt.detach(),
+            'diag/pre_gt_ratio': (pre_cnt / (gt_cnt + 1e-12)).detach(),
+            'diag/pre_map_mean': pred_density.mean().detach(),
+            'diag/pre_map_std': pred_density.std().detach(),
+            'diag/pre_map_zero_fraction': (pred_density < 1e-6).float().mean().detach(),
+            # ── Diagnose: counting_mse in raw density scale (÷den_factor²) ──
+            #   val/density_mse = MSE(pre_map, gt_den)  — raw scale
+            #   counting_mse    = MSE(pre_map, gt_den * den_factor)
+            #   → 与 val/density_mse 可比: counting_mse / den_factor²
+            'diag/counting_mse_raw_scale': (counting_mse / (self.den_factor ** 2)).detach(),
         }, on_step=True, on_epoch=True, sync_dist=True)
 
         # ── 记录诊断数据（供 diagnose log 读取）──
@@ -216,6 +236,16 @@ class DRNetModel(HyperModel):
         log_dict[f'{prefix}/mae'] = mae
         log_dict[f'{prefix}/density_mse'] = density_mse
         log_dict[f'{prefix}/pre_cnt'] = pre_cnt
+
+        # ── Diagnose: density map 崩溃检测 ─────────────────────────────────
+        log_dict.update({
+            'diag/val_pre_gt_ratio': (pre_cnt / (gt_cnt + 1e-12)).detach(),
+            'diag/val_pre_map_mean': pre_map.mean().detach(),
+            'diag/val_pre_map_std': pre_map.std().detach(),
+            'diag/val_pre_map_zero_fraction': (pre_map < 1e-6).float().mean().detach(),
+            'diag/val_pre_map_min': pre_map.min().detach(),
+            'diag/val_pre_map_max': pre_map.max().detach(),
+        })
 
         self.log_dict(log_dict, on_epoch=True, sync_dist=True)
 
