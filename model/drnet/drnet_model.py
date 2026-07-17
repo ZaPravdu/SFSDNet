@@ -46,6 +46,10 @@ class DRNetModel(HyperModel):
 
         super().__init__(cfg, cfg_data, train_cfg, train_loader)
 
+        # ── Pseudo mode ──────────────────────────────────────────────
+        assert self.pseudo_mode in ('dens', 'feature', 'mixed'), (
+            f'pseudo_mode must be dens, feature, or mixed, got {self.pseudo_mode}')
+
         # ── Core model ─────────────────────────────────────────────
         self.student = Video_Individual_Counter(cfg, cfg_data)
 
@@ -191,9 +195,15 @@ class DRNetModel(HyperModel):
 
         # ── Push to frame buffer (weak-aug predictions only) ─────────
         if push_buffer:
-            for i, t in enumerate(targets):
-                key = (t.get('scene_name'), t.get('frame'))
-                self.frame_buffer[key] = pred_density[i].detach().cpu()
+            self.frame_buffer.clear()
+            feat = None
+            if self.pseudo_mode in ('mixed', 'feature'):
+                feat = self.student.get_bottleneck_feature()
+            for i in range(2):
+                key = (targets[i].get('scene_name'), targets[i].get('frame'))
+                density = pred_density[i].detach().cpu()
+                f = feat[i].detach().cpu() if feat is not None else None
+                self.frame_buffer[key] = (density, f)
 
         return total_loss
 
@@ -294,17 +304,16 @@ class DRNetModel(HyperModel):
         self.student.train()
 
     def _pseudo_loss(self, data):
-        """Density-map pseudo-supervision loss.
+        """Density-map + optional feature-map pseudo-supervision loss.
 
-        Teacher (ST=True, fast-fail if None) or student.eval() (ST=False)
-        generates pseudo density maps. Student learns from strong-aug
-        images via MSE loss with optional spatial sum-pool downsampling
-        to cancel zero-mean noise.
+        Teacher generates pseudo density maps (and bottleneck features).
+        Student learns from strong-aug images via MSE.
+        Supports dens / mixed / feature modes.
 
         Parameters
         ----------
         data : tuple
-            3-tuple (weak_img, strong_img, targets) or 2-tuple fallback.
+            3-tuple (weak_img, strong_img, targets).
 
         Returns
         -------
@@ -326,9 +335,11 @@ class DRNetModel(HyperModel):
         with torch.no_grad():
             if self.ST:
                 teacher_pre, *_ = self.teacher(weak_img, targets)
+                teacher_feat = self.teacher.get_bottleneck_feature()
             else:
                 self.student.eval()
                 teacher_pre, *_ = self.student(weak_img, targets)
+                teacher_feat = self.student.get_bottleneck_feature()
                 self.student.train()
 
         # ── Buffer replacement ──────────────────────────────────────
@@ -336,19 +347,31 @@ class DRNetModel(HyperModel):
             key = (t.get('scene_name'), t.get('frame'))
             cached = self.frame_buffer.get(key)
             if cached is not None:
-                teacher_pre[i] = cached.to(self.device)
+                teacher_pre[i] = cached[0].to(self.device)
+                if cached[1] is not None:
+                    teacher_feat[i] = cached[1].to(self.device)
 
-        # ── Student: density prediction on strong aug ───────────────
+        # ── Student: density prediction + feature on strong aug ─────
         student_pre, *_ = self.student(strong_img, targets)
+        student_feat = self.student.get_bottleneck_feature()
 
         # ── Density MSE (optional sum-pool downsampling) ────────────
-        s = student_pre * self.den_factor
-        t = teacher_pre * self.den_factor
-        k = self.downsample_factor
-        if k > 1:
-            s = F.avg_pool2d(s, k) * (k ** 2)
-            t = F.avg_pool2d(t, k) * (k ** 2)
-        loss = F.mse_loss(s, t)
+        density_loss = torch.tensor(0., device=self.device)
+        if self.pseudo_mode in ('dens', 'mixed'):
+            s = student_pre * self.den_factor
+            t = teacher_pre * self.den_factor
+            k = self.downsample_factor
+            if k > 1:
+                s = F.avg_pool2d(s, k) * (k ** 2)
+                t = F.avg_pool2d(t, k) * (k ** 2)
+            density_loss = F.mse_loss(s, t)
+
+        # ── Feature MSE (plain, no scaling) ─────────────────────────
+        feature_loss = torch.tensor(0., device=self.device)
+        if self.pseudo_mode in ('mixed', 'feature'):
+            feature_loss = F.mse_loss(student_feat, teacher_feat)
+
+        loss = density_loss + self.feature_pseudo_weight * feature_loss
 
         # ── Gate regularisation (via HyperModel's _add_reg) ────────
         loss = self._add_reg(loss)
@@ -363,6 +386,8 @@ class DRNetModel(HyperModel):
 
         self.log_dict({
             'train/pseudo_loss': loss,
+            'train/pseudo_density_loss': density_loss,
+            'train/pseudo_feature_loss': feature_loss,
             'train/pseudo_teacher_sum': teacher_pre.detach().sum(),
             'train/pseudo_student_sum': student_pre.detach().sum(),
         }, on_step=True, on_epoch=True, sync_dist=True)
@@ -407,6 +432,7 @@ def _make_train_cfg(**overrides):
         freeze_attention=False, use_attention_gate=False, use_variance_reg=False,
         dens_recon=False, delta_L_mode=None, gate_freeze_json=None,
         gt_ratios_per_scene=0, batch_size=8,
+        pseudo_mode='dens', feature_pseudo_weight=1.0,
     )
     for k, v in overrides.items():
         setattr(cfg, k, v)
@@ -600,6 +626,7 @@ class TestDRNetPseudoLoss:
                 training_mode='unsupervised', downsample_factor=1))
 
             m.student.return_value = self._student_out(0.0)
+            m.student.get_bottleneck_feature = lambda: torch.zeros(TestDRNetPseudoLoss.B, 576, 1, 1)
             return m
 
     @pytest.fixture
@@ -632,6 +659,7 @@ class TestDRNetPseudoLoss:
         model.ST = True
         model.teacher = MagicMock()
         model.teacher.return_value = self._teacher_out(0.0)
+        model.teacher.get_bottleneck_feature = lambda: torch.zeros(TestDRNetPseudoLoss.B, 576, 1, 1)
         model.student.return_value = self._student_out(1.0)
         loss = model._pseudo_loss(batch_3)
         model.teacher.assert_called_once()
@@ -660,6 +688,7 @@ class TestDRNetPseudoLoss:
         model.ST = True
         model.teacher = MagicMock()
         model.teacher.return_value = self._teacher_out(0.5)
+        model.teacher.get_bottleneck_feature = lambda: torch.zeros(TestDRNetPseudoLoss.B, 576, 1, 1)
         model.student.return_value = self._student_out(0.3)
 
         model.downsample_factor = 1
@@ -677,6 +706,90 @@ class TestDRNetPseudoLoss:
         with pytest.raises(ValueError):
             model._pseudo_loss((torch.randn(2, 3, 4, 4),))
 
+
+class TestDRNetPseudoLossMixed:
+    """_pseudo_loss mixed mode: density + feature losses."""
+
+    B, C, H, W = 2, 1, 4, 4
+
+    @pytest.fixture
+    def model(self):
+        from unittest.mock import patch, MagicMock
+
+        with patch('model.drnet.drnet_model.Video_Individual_Counter'), \
+             patch('model.drnet.drnet_model.Task_KPI_Pool'), \
+             patch('model.drnet.drnet_model.add_gates_to_conv'):
+
+            cfg = MagicMock()
+            cfg.MODEL = 'DRNet'
+            cfg.LR_Thre = 1e-2
+            cfg.LR_DECAY = 0.95
+
+            from types import SimpleNamespace
+            cfg_data = SimpleNamespace(DEN_FACTOR=200)
+            m = DRNetModel(cfg, cfg_data, _make_train_cfg(
+                training_mode='unsupervised', downsample_factor=1,
+                pseudo_mode='mixed', feature_pseudo_weight=1.0,
+                ST=True))
+
+            m.teacher = MagicMock()
+            m.teacher.return_value = (
+                torch.full((self.B, 1, self.H, self.W), 0.5),
+                torch.full((self.B, 1, self.H, self.W), 1.0),
+                torch.tensor(0.0), torch.tensor(0.0),
+                torch.tensor(0.0), torch.tensor(0.0),
+                torch.tensor(0.0), {},
+            )
+            m.teacher.get_bottleneck_feature = lambda: torch.full((self.B, 576, 1, 1), 0.1)
+
+            m.student.return_value = (
+                torch.full((self.B, 1, self.H, self.W), 1.0, requires_grad=True),
+                torch.full((self.B, 1, self.H, self.W), 2.0),
+                torch.tensor(0.0), torch.tensor(0.0),
+                torch.tensor(0.0), torch.tensor(0.0),
+                torch.tensor(0.0), {},
+            )
+            m.student.get_bottleneck_feature = lambda: torch.full((self.B, 576, 1, 1), 0.2, requires_grad=True)
+            return m
+
+    @pytest.fixture
+    def batch(self):
+        return (
+            torch.randn(self.B, 3, self.H, self.W),
+            torch.randn(self.B, 3, self.H, self.W),
+            [{'points': torch.zeros((0, 2))}, {'points': torch.zeros((0, 2))}],
+        )
+
+    def test_returns_scalar_tensor(self, model, batch):
+        loss = model._pseudo_loss(batch)
+        assert isinstance(loss, torch.Tensor)
+        assert loss.ndim == 0
+        assert loss.requires_grad
+
+    def test_feature_loss_nonzero(self, model, batch):
+        """Different teacher/student features -> feature_loss > 0."""
+        loss = model._pseudo_loss(batch)
+        assert loss.item() > 0
+
+    def test_density_loss_alone_in_dens_mode(self, model, batch):
+        """dens mode: feature_loss=0, only density contributes."""
+        model.pseudo_mode = 'dens'
+        loss_dens = model._pseudo_loss(batch)
+        model.pseudo_mode = 'mixed'
+        loss_mixed = model._pseudo_loss(batch)
+        assert loss_mixed.item() > loss_dens.item(), (
+            f'mixed loss ({loss_mixed.item()}) should exceed '
+            f'dens loss ({loss_dens.item()})')
+
+    def test_feature_weight_scales_loss(self, model, batch):
+        """feature_pseudo_weight=2 -> mixed loss > weight=1 case."""
+        model.pseudo_mode = 'mixed'
+        model.feature_pseudo_weight = 1.0
+        loss_1 = model._pseudo_loss(batch).item()
+        model.feature_pseudo_weight = 2.0
+        loss_2 = model._pseudo_loss(batch).item()
+        assert loss_2 > loss_1, (
+            f'higher weight should increase loss ({loss_2} <= {loss_1})')
 
 class TestDRNetModelOptimizer:
     """configure_optimizers 的参数组和调度器。"""

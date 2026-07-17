@@ -90,6 +90,10 @@ def parse_args():
     parser.add_argument('--gate-freeze-json', type=str, default=None)
     parser.add_argument('--use-variance-reg', type=int, default=0, choices=[0, 1])
     parser.add_argument('--downsample-factor', type=int, default=1)
+    parser.add_argument('--pseudo-mode', type=str, default='dens',
+                        choices=['dens', 'feature', 'mixed'])
+    parser.add_argument('--feature-pseudo-weight', type=float, default=1.0,
+                        help='Weight for feature pseudo loss in mixed mode')
 
     # ── Gate 控制 ──
     parser.add_argument('--inject-gate', type=int, default=1, choices=[0, 1])
