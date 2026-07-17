@@ -94,6 +94,8 @@ def parse_args():
                         choices=['dens', 'feature', 'mixed'])
     parser.add_argument('--feature-pseudo-weight', type=float, default=1.0,
                         help='Weight for feature pseudo loss in mixed mode')
+    parser.add_argument('--temporal-consist', type=int, default=1, choices=[0, 1],
+                        help='Use frame buffer for temporal consistency')
 
     # ── Gate 控制 ──
     parser.add_argument('--inject-gate', type=int, default=1, choices=[0, 1])

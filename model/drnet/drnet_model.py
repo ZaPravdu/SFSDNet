@@ -342,14 +342,15 @@ class DRNetModel(HyperModel):
                 teacher_feat = self.student.get_bottleneck_feature()
                 self.student.train()
 
-        # ── Buffer replacement ──────────────────────────────────────
-        for i, t in enumerate(targets):
-            key = (t.get('scene_name'), t.get('frame'))
-            cached = self.frame_buffer.get(key)
-            if cached is not None:
-                teacher_pre[i] = cached[0].to(self.device)
-                if cached[1] is not None:
-                    teacher_feat[i] = cached[1].to(self.device)
+        # ── Buffer replacement (temporal consistency) ────────────────
+        if getattr(self, 'temporal_consist', True):
+            for i, t in enumerate(targets):
+                key = (t.get('scene_name'), t.get('frame'))
+                cached = self.frame_buffer.get(key)
+                if cached is not None:
+                    teacher_pre[i] = cached[0].to(self.device)
+                    if cached[1] is not None:
+                        teacher_feat[i] = cached[1].to(self.device)
 
         # ── Student: density prediction + feature on strong aug ─────
         student_pre, *_ = self.student(strong_img, targets)
@@ -433,6 +434,7 @@ def _make_train_cfg(**overrides):
         dens_recon=False, delta_L_mode=None, gate_freeze_json=None,
         gt_ratios_per_scene=0, batch_size=8,
         pseudo_mode='dens', feature_pseudo_weight=1.0,
+        temporal_consist=True,
     )
     for k, v in overrides.items():
         setattr(cfg, k, v)
