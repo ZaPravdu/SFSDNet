@@ -388,6 +388,7 @@ class DRNetModel(HyperModel):
         self._diag_frame_gt_sums = [teacher_pre[i].detach().sum().item() for i in range(len(teacher_pre))]
 
         self.log_dict({
+            'train_loss': loss,
             'train/pseudo_loss': loss,
             'train/pseudo_density_loss': density_loss,
             'train/pseudo_feature_loss': feature_loss,
