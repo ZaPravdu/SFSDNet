@@ -52,15 +52,17 @@ class GatedConv(BaseGatedModule):
             self.gate = nn.Conv2d(C_out, C_out, kernel_size=1, bias=False)
             if prior_mean == 1:
                 prior = torch.eye(C_out).view(C_out, C_out, 1, 1)
+
             elif prior_mean == 0:
                 prior = torch.zeros(C_out, C_out, 1, 1)
+    
             else:
                 raise ValueError(
                     f"prior_mean must be 0 or 1 for channel_mixture, got {prior_mean}"
                 )
             self.register_buffer('prior_mean', prior)
             with torch.no_grad():
-                self.gate.weight.copy_(prior)
+                self.gate.weight.copy_(torch.eye(C_out).view(C_out, C_out, 1, 1))
         else:
             raise ValueError(
                 f"Unknown gate_mode='{gate_mode}'. "
