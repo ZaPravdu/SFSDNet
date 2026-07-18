@@ -114,11 +114,15 @@ def parse_args():
     parser.add_argument('--validate-mode', type=int, default=0, choices=[0, 1])
     parser.add_argument('--weight-path', type=str, default=None)
     parser.add_argument('--project-name', type=str, default='SFSDNet')
+    parser.add_argument('--experiment-suffix', type=str, default=None,
+                        help='Suffix appended to experiment name (used by train_repeat.py)')
 
     args = parser.parse_args()
     _conv_bool(args)
     _resolve_default_paths(args)
     args.experiment_name = _compute_experiment_name(args)
+    if args.experiment_suffix:
+        args.experiment_name += args.experiment_suffix
     return args
 
 
@@ -145,6 +149,19 @@ def _resolve_default_paths(args):
             args.weight_path = f'{base}/sdnet.pth'
 
 
+def _abbr_training_mode(mode):
+    return {'supervised': 'sup', 'semi_supervised': 'semi', 'unsupervised': 'unsup'}.get(mode, mode)
+
+
+def _format_beta(beta):
+    if beta == int(beta):
+        return str(int(beta))
+    if 0 < beta < 0.01:
+        s = f'{beta:.0e}'
+        return s.replace('e-0', 'e-')   # 1e-03 → 1e-3
+    return str(beta).rstrip('0').rstrip('.')
+
+
 def _compute_experiment_name(args):
     if args.validate_mode:
         scene = args.single_scene if args.single_scene else 'all'
@@ -152,11 +169,21 @@ def _compute_experiment_name(args):
     if args.use_variance_reg:
         postfix = '-attn_gate' if args.use_attention_gate else ''
         return f'{args.data_mode}-var_reg{postfix}-ep{args.scene_finetune_epochs}'
-    postfix = '-attn_gate' if args.use_attention_gate else ''
-    scene = args.single_scene if args.single_scene else 'all'
-    name = f'{args.data_mode}-{args.reg_mode}-gt{args.gt_ratios_per_scene}-{scene}{postfix}'
-    if args.delta_L_mode:
-        name += f'-{args.delta_L_mode}_deltaL{args.beta}'
+
+    scene = f'{args.data_mode}-{args.single_scene}' if args.single_scene else args.data_mode
+    train_mode = _abbr_training_mode(args.training_mode)
+    beta_str = _format_beta(args.beta)
+    w = args.feature_pseudo_weight
+    if args.pseudo_mode != 'dens':
+        pseudo_suffix = f'{w:.0f}' if w == int(w) else str(w)
+    else:
+        pseudo_suffix = ''
+    pseudo_str = args.pseudo_mode + pseudo_suffix
+    name = (
+        f'{args.model}-gt{args.gt_ratios_per_scene}-{scene}'
+        f'-gate-{train_mode}-reg{beta_str}'
+        f'-{pseudo_str}-{args.prior_mean}{args.reg_mode}'
+    )
     return name
 
 
