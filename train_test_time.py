@@ -101,6 +101,7 @@ def parse_args():
     parser.add_argument('--inject-gate', type=int, default=1, choices=[0, 1])
     parser.add_argument('--gate-mode', type=str, default='independent',
                         choices=['independent', 'input_dependent', 'channel_mixture'])
+    parser.add_argument('--prior-mean', type=int, default=1, choices=[0, 1])
 
     # ── 方差正则化（Stage 1） ──
     parser.add_argument('--source-scene-path', type=str, default=None)

@@ -75,8 +75,10 @@ class SDNetModel(HyperModel):
             return
         if self.reg_mode in ('l1', 'l2'):
             gate_mode = getattr(self, 'gate_mode', 'independent')
+            prior_mean = getattr(self, 'prior_mean', 1)
             for name in ['share_decoder', 'global_decoder', 'in_out_decoder', 'Extractor', 'feature_fuse']:
-                add_gates_to_conv(getattr(self.student, name), gate_mode=gate_mode)
+                add_gates_to_conv(getattr(self.student, name), gate_mode=gate_mode,
+                                  prior_mean=prior_mean)
         if self.use_attention_gate and self.reg_mode is not None:
             add_gates_to_attention(self.student)
         if self.gate_freeze_json is not None:

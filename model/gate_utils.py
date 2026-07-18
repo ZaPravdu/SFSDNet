@@ -8,13 +8,13 @@ from model.ViT.models_crossvit import Attention, CrossAttention
 from model.gates import GatedConv, GatedAttention, GatedCrossAttention, BaseGatedModule
 
 
-def add_gates_to_conv(model, mode=None, gate_mode='independent'):
+def add_gates_to_conv(model, mode=None, gate_mode='independent', prior_mean=1.0):
     """Replace all nn.Conv2d with GatedConv. ``mode`` accepted for backward compat."""
     for name, child in list(model.named_children()):
         if isinstance(child, nn.Conv2d):
-            setattr(model, name, GatedConv(child, gate_mode=gate_mode))
+            setattr(model, name, GatedConv(child, gate_mode=gate_mode, prior_mean=prior_mean))
         elif len(list(child.children())):
-            add_gates_to_conv(child, mode=mode, gate_mode=gate_mode)
+            add_gates_to_conv(child, mode=mode, gate_mode=gate_mode, prior_mean=prior_mean)
 
 
 def add_gates_to_attention(model):

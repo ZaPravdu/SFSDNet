@@ -15,7 +15,8 @@ class GatedConv(BaseGatedModule):
         per-channel logits from pooled input features.
       - ``'channel_mixture'``: ``gate`` is an ``nn.Conv2d(C_out, C_out, 1, bias=False)``
         that mixes all output channels via a learned C_out×C_out matrix W.
-        Prior: W = I (identity). L1/L2 regularize (W - I).
+        Prior: ``prior_mean`` controls the prior matrix that L1/L2 regularize toward.
+        ``prior_mean=1`` → W = I (identity); ``prior_mean=0`` → W = 0 (zero matrix).
 
     ``self.gate`` is the unified gate attribute in all modes — external code can search
     for ``.gate`` in parameter names without knowing the mode.
@@ -39,21 +40,32 @@ class GatedConv(BaseGatedModule):
 
         if gate_mode == 'independent':
             self.gate = nn.Parameter(torch.full((C_out,), float(0.)))
+            if isinstance(prior_mean, (int, float)):
+                prior_mean = torch.full((C_out,), float(prior_mean))
+            self.register_buffer('prior_mean', prior_mean)
         elif gate_mode == 'input_dependent':
             self.gate = nn.Conv2d(conv.in_channels, C_out, 3)
+            if isinstance(prior_mean, (int, float)):
+                prior_mean = torch.full((C_out,), float(prior_mean))
+            self.register_buffer('prior_mean', prior_mean)
         elif gate_mode == 'channel_mixture':
             self.gate = nn.Conv2d(C_out, C_out, kernel_size=1, bias=False)
+            if prior_mean == 1:
+                prior = torch.eye(C_out).view(C_out, C_out, 1, 1)
+            elif prior_mean == 0:
+                prior = torch.zeros(C_out, C_out, 1, 1)
+            else:
+                raise ValueError(
+                    f"prior_mean must be 0 or 1 for channel_mixture, got {prior_mean}"
+                )
+            self.register_buffer('prior_mean', prior)
             with torch.no_grad():
-                self.gate.weight.copy_(torch.eye(C_out).view(C_out, C_out, 1, 1))
+                self.gate.weight.copy_(prior)
         else:
             raise ValueError(
                 f"Unknown gate_mode='{gate_mode}'. "
                 f"Use 'independent' (default), 'input_dependent', or 'channel_mixture'."
             )
-
-        if isinstance(prior_mean, (int, float)):
-            prior_mean = torch.full((C_out,), float(prior_mean))
-        self.register_buffer('prior_mean', prior_mean)
 
     def get_gate_logits(self, x=None):
         """Return raw gate logits, shape (B, C_out, 1, 1).
@@ -112,10 +124,7 @@ class GatedConv(BaseGatedModule):
 
     def _reg_total(self, fn):
         if self.gate_mode == 'channel_mixture':
-            C_out = self.gate.weight.shape[0]
-            I = torch.eye(C_out, device=self.gate.weight.device)
-            w = self.gate.weight.view(C_out, C_out)
-            diff = w - I
+            diff = self.gate.weight - self.prior_mean
             coeff = torch.tensor(self.reg_coeff, device=diff.device).mean()
             return fn(diff).sum() * coeff
         if self.gate_mode == 'independent':
