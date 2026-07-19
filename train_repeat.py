@@ -9,23 +9,25 @@ Each repetition resets all RNG seeds (random, numpy, torch) and appends
 """
 
 import sys
+import os
 import subprocess
 import argparse
 
 REPEAT_HELP = """\
-usage: python train_repeat.py -r N [train_test_time.py args ...]
+usage: python train_repeat.py -r N [options] [train_test_time.py args ...]
 
 Run train_test_time.py N times with seeds base, base+1, ..., base+N-1.
 
-positional arguments:
+repeat options:
   -r N, --repeat N    Number of repetitions (required)
   --base-seed S       Seed for first repetition (default: --seed value)
+  --group G           wandb group name for all repetitions
 
 All other arguments are passed through to train_test_time.py.
 Example:
-  python train_repeat.py -r 3 --model DRNet --data-mode HT21 ^
-      --training-mode unsupervised --pseudo-mode mixed ^
-      --beta 0.001 --reg-mode l1 --prior-mean 0
+  python train_repeat.py -r 3 --group HT21-unsup-mixed ^
+      --model DRNet --data-mode HT21 --training-mode unsupervised ^
+      --pseudo-mode mixed --beta 0.001 --reg-mode l1 --prior-mean 0
 """
 
 
@@ -36,9 +38,10 @@ def main():
         print(REPEAT_HELP)
         return
 
-    # Extract -r N and optional --base-seed
+    # Extract -r N, optional --base-seed, --group
     repeat = None
     base_seed = None
+    group = None
     passthrough = []
     i = 0
     while i < len(argv):
@@ -47,6 +50,9 @@ def main():
             i += 2
         elif argv[i] == '--base-seed' and i + 1 < len(argv):
             base_seed = int(argv[i + 1])
+            i += 2
+        elif argv[i] in ('--group',) and i + 1 < len(argv):
+            group = argv[i + 1]
             i += 2
         else:
             passthrough.append(argv[i])
@@ -75,7 +81,10 @@ def main():
         print(f'Command: {" ".join(cmd)}')
         print('=' * 72)
 
-        ret = subprocess.run(cmd, shell=not sys.platform.startswith('linux'))
+        env = {**os.environ}
+        if group is not None:
+            env['WANDB_RUN_GROUP'] = group
+        ret = subprocess.run(cmd, shell=not sys.platform.startswith('linux'), env=env)
         if ret.returncode != 0:
             print(f'ERROR: repetition {i + 1} failed with exit code {ret.returncode}',
                   file=sys.stderr)

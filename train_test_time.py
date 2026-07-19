@@ -217,6 +217,7 @@ def get_logger(args):
         name=args.experiment_name, project=args.project_name,
         save_dir='/home/mscs/houminqiu2/SFSDNet/weight', offline=False,
         settings=wandb.Settings(_disable_stats=True), config=config_dict,
+        group=os.environ.get('WANDB_RUN_GROUP'),
     )
     return False, wandb_logger
 
